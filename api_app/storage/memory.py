@@ -17,7 +17,8 @@ from contextlib import contextmanager
 from ..clock import now_utc_iso
 from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ResolvedCredential,
-               ChainBackoffEntry, ContractHistory,
+               ChainBackoffEntry, ConsensusRefreshState,
+               ConsensusSnapshotRecord, ContractHistory,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
                OwnerLifecycleFacts, OwnerMigrationConflict, OwnerSettingsBundle,
@@ -61,6 +62,9 @@ class MemoryStorage:
         self._events: list[dict] = []
         self._rate_cache: RateCacheEntry | None = None
         self._dividend_cache: dict[str, DividendCacheEntry] = {}
+        # OS-03（#392）：分析師共識快取——鍵 (symbol, as_of)／symbol。
+        self._consensus_snapshots: dict[tuple[str, str], ConsensusSnapshotRecord] = {}
+        self._consensus_refresh_state: dict[str, ConsensusRefreshState] = {}
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
         # PB-01（#292，Anonymous Public Beta）：owner registry ＋
@@ -72,6 +76,7 @@ class MemoryStorage:
         # IRI-04：sha256(token) → (reason, deleted_at)
         self._identity_tombstones: dict[str, tuple[str, str]] = {}
         self._claim_lock = threading.Lock()
+        self._settings_lock = threading.Lock()
         # SECURITY-FIX-02：(scope, key, window_seconds, window_start) -> count
         self._rate_limits: dict[tuple[str, str, int, int], int] = {}
         # AUTH-01（#308，三層角色模型）：與 owner registry／browser
@@ -125,7 +130,7 @@ class MemoryStorage:
         Postgres-only 的 adapter 層測試）。"""
         yield
 
-    _NON_STATE_ATTRS = ("_claim_lock", "_txn_depth")
+    _NON_STATE_ATTRS = ("_claim_lock", "_settings_lock", "_txn_depth")
 
     @contextmanager
     def transaction(self):
@@ -329,6 +334,41 @@ class MemoryStorage:
 
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         self._dividend_cache[entry.symbol] = entry
+
+    # ---------- 分析師共識快取（OS-03／#392） ----------
+
+    def save_consensus_snapshot(self, record: ConsensusSnapshotRecord) -> None:
+        self._consensus_snapshots[(record.symbol, record.as_of)] = record
+
+    def latest_consensus_snapshots(self, symbols: Sequence[str], *,
+                                   source: str) -> dict[str, ConsensusSnapshotRecord]:
+        wanted = set(symbols)
+        out: dict[str, ConsensusSnapshotRecord] = {}
+        for (symbol, as_of), rec in self._consensus_snapshots.items():
+            if symbol not in wanted or rec.source != source:
+                continue
+            if symbol not in out or as_of > out[symbol].as_of:
+                out[symbol] = rec
+        return out
+
+    def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
+        self._consensus_refresh_state[state.symbol] = state
+
+    def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
+        return dict(self._consensus_refresh_state)
+
+    def opportunity_custom_symbols(self) -> list[str]:
+        privileged = ("superuser", "superadmin")
+        allowed = {oid for oid, o in self._owners.items() if o.role in privileged}
+        allowed |= {bi.owner_id for bi in self._browser_identities.values()
+                    if bi.role in privileged and bi.owner_id in self._owners}
+        out: set[str] = set()
+        for owner_id, settings in self._owner_settings.items():
+            if owner_id not in allowed:
+                continue
+            opp = settings.opportunity_search or {}
+            out.update(opp.get("custom_symbols") or ())
+        return sorted(out)
 
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
@@ -995,6 +1035,15 @@ class MemoryStorage:
     def save_settings(self, settings: DataSourceSettings) -> None:
         owner = require_owner(settings.owner_id)
         self._owner_settings[owner] = settings
+
+    def update_settings(self, owner, mutate):
+        owner = require_owner(owner)
+        with self._settings_lock:
+            updated = mutate(self._owner_settings.get(owner))
+            if require_owner(updated.owner_id) != owner:
+                raise ValueError("update_settings 不能改寫成別的 owner")
+            self._owner_settings[owner] = updated
+        return updated
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
         owner = require_owner(owner)

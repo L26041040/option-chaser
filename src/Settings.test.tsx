@@ -18,6 +18,16 @@ import { fakeMediaQueryList } from "./test-setup";
 
 const PROVIDER = "marketdata-app";
 
+/** OS-02（#391）：機會搜尋設定的預設值（後端沒存過時回的就是這份）。 */
+const OPP_DEFAULTS: SettingsView["opportunity_search"] = {
+  universe_id: "sample-large-cap",
+  custom_symbols: [],
+  percentile_max: 20,
+  dispersion_max: 10,
+  strategies: ["single-leg", "vertical-spread", "butterfly"],
+  sort: "return",
+};
+
 function view(overrides: Partial<SettingsView> = {}): SettingsView {
   return {
     supported_providers: [{ id: PROVIDER, label: "Market Data App" }],
@@ -31,6 +41,20 @@ function view(overrides: Partial<SettingsView> = {}): SettingsView {
     },
     market_data_effective: { source: "Cboe", fallback: false, reason: null },
     historical_iv_enabled: false,
+    opportunity_search: OPP_DEFAULTS,
+    opportunity_search_options: {
+      universes: [
+        { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
+          provisional: true, symbol_count: 50 },
+        { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+      ],
+      strategies: ["single-leg", "vertical-spread", "butterfly"],
+      sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },
+              { id: "cost", label: "投入成本（低→高）" },
+              { id: "max_loss", label: "最大損失（低→高）" }],
+      custom_symbols_max: 50,
+      defaults: OPP_DEFAULTS,
+    },
     updated_at: null,
     ...overrides,
   };
@@ -248,6 +272,28 @@ describe("自訂只能挑白名單", () => {
 });
 
 describe("儲存", () => {
+  it("OS-02（#391）：存機會搜尋時資料來源帶已存的值，不帶 Data / API 還沒按儲存的草稿",
+     async () => {
+    const spy = mockApi([view(), view({
+      opportunity_search: { ...OPP_DEFAULTS, sort: "cost" } })]);
+    render(<Settings />);
+    await ready();
+    // Data / API 改了但沒按儲存。
+    await userEvent.click(within(section("Market Data")).getByRole("radio", { name: "自訂" }));
+    const opp = within(section("機會搜尋"));
+    await userEvent.selectOptions(opp.getByLabelText("排序方式"), "cost");
+    await userEvent.click(opp.getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(opp.getByRole("status")).toHaveTextContent("已儲存"));
+    const put = spy.mock.calls.find(
+      ([url, init]) => url === "/api/settings" && init?.method === "PUT");
+    const body = JSON.parse(put![1]!.body as string);
+    expect(body.market_data).toEqual({ mode: "default", provider: null });
+    expect(body.opportunity_search.sort).toBe("cost");
+    // Data / API 的草稿還在（沒有被機會搜尋的存檔蓋掉）。
+    expect(within(section("Market Data")).getByRole("radio", { name: "自訂" })).toBeChecked();
+  });
+
   it("送出模式選擇到 /api/settings", async () => {
     const spy = mockApi([view()]);
     render(<Settings />);
@@ -821,6 +867,53 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     expect(screen.queryByText(/目前身分：/)).not.toBeInTheDocument();
   });
 
+  it("桌面：Super User 點「機會搜尋」分頁顯示機會搜尋區塊（OS-02／#391）", async () => {
+    goDesktop();
+    mockApi([view()], { role: "superuser" });
+    render(<Settings />);
+    await readyDesktop();
+
+    await userEvent.click(screen.getByRole("tab", { name: "機會搜尋" }));
+
+    const block = await screen.findByRole("region", { name: "機會搜尋" });
+    expect(within(block).getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(20);
+    expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
+  });
+
+  it("桌面：從機會搜尋頁的「調整門檻」連結（#/settings/opportunity）進來，" +
+     "直接停在「機會搜尋」分頁（OS-05／#394）", async () => {
+    goDesktop();
+    window.location.hash = "#/settings/opportunity";
+    try {
+      mockApi([view()], { role: "superuser" });
+      render(<Settings />);
+      await readyDesktop();
+
+      expect(screen.getByRole("tab", { name: "機會搜尋" }))
+        .toHaveAttribute("aria-selected", "true");
+      expect(await screen.findByRole("region", { name: "機會搜尋" })).toBeInTheDocument();
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
+  it("手機：從 #/settings/opportunity 進來，載入後捲到「機會搜尋」區塊（OS-05／#394）",
+     async () => {
+    window.location.hash = "#/settings/opportunity";
+    const scrolled: Element[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+      scrolled.push(this);
+    });
+    try {
+      mockApi([view()], { role: "superuser" });
+      render(<Settings />);
+      const block = await screen.findByRole("region", { name: "機會搜尋" });
+      await waitFor(() => expect(scrolled).toContain(block));
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
   it("桌面：Super Admin 的 subnav 不再有「管理後台」分頁，改成旁邊一個" +
      "進入管理中心的入口；Settings 本身不掛管理面板", async () => {
     goDesktop();
@@ -833,7 +926,7 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
     expect(screen.queryByRole("tab", { name: "管理後台" })).not.toBeInTheDocument();
     expect(within(screen.getByRole("tablist")).getAllByRole("tab")
       .map((t) => t.textContent))
-      .toEqual(["一般", "資料來源", "診斷", "刪除我的資料", "免責聲明"]);
+      .toEqual(["一般", "資料來源", "機會搜尋", "診斷", "刪除我的資料", "免責聲明"]);
     expect(screen.queryByText("Super User 管理面板")).not.toBeInTheDocument();
     expect(spy.mock.calls.some(([u]) => String(u).startsWith("/api/superuser/")))
       .toBe(false);
@@ -880,6 +973,9 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
 
     expect(regionNames()).toEqual(["意見回饋", "刪除我的資料", "免責聲明", "登入"]);
     expect(screen.queryByText("Data / API")).not.toBeInTheDocument();
+    // OS-02（#391）：機會搜尋只給 Super User／Super Admin。
+    expect(screen.queryByRole("region", { name: "機會搜尋" })).not.toBeInTheDocument();
+    expect(screen.queryByText("機會搜尋")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Diagnostics" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
   });
@@ -921,7 +1017,8 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
 
     // 手機版單欄堆疊的既有順序，一格不多一格不少。
     expect(regionNames()).toEqual(
-      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]);
+      ["登入", "Market Data", "Historical IV", "機會搜尋", "Diagnostics", "刪除我的資料",
+       "免責聲明"]);
     expect(screen.queryByRole("link", { name: /進入管理中心/ })).not.toBeInTheDocument();
     const md = within(section("Market Data"));
     await userEvent.click(md.getByRole("radio", { name: "自訂" }));
@@ -936,7 +1033,8 @@ describe("CLAUDE-SETTINGS-ROLE-IA-001：依角色整理的設定頁", () => {
     await ready();
 
     expect(regionNames()).toEqual(
-      ["登入", "Market Data", "Historical IV", "Diagnostics", "刪除我的資料", "免責聲明"]);
+      ["登入", "Market Data", "Historical IV", "機會搜尋", "Diagnostics", "刪除我的資料",
+       "免責聲明"]);
     expect(screen.getByRole("link", { name: /進入管理中心/ })).toHaveAttribute("href", "#/admin");
     expect(screen.queryByRole("region", { name: "Super User 管理面板" })).not.toBeInTheDocument();
     expect(spy.mock.calls.some(([u]) => /^\/api\/(superuser|ops)\//.test(String(u))))

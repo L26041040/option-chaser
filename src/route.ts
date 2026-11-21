@@ -38,7 +38,30 @@ export function settingsHash(): string {
 
 /** 目前是不是在設定畫面。 */
 export function isSettingsHash(hash: string): boolean {
-  return hash === settingsHash();
+  return hash === settingsHash() || settingsSectionFromHash(hash) !== null;
+}
+
+/** 設定頁直接打開「機會搜尋」區塊（OS-05／#394：機會搜尋頁的「調整門檻」
+ *  連結）。仍是設定頁——`isSettingsHash()` 認得它。 */
+export function opportunitySettingsHash(): string {
+  return "#/settings/opportunity";
+}
+
+/** 設定頁 hash 帶的區塊名；沒帶（或不是設定頁）回 null。目前只認
+ *  `opportunity`——其他區塊沒有從外部直接連進來的需要。 */
+export function settingsSectionFromHash(hash: string): "opportunity" | null {
+  return hash === opportunitySettingsHash() ? "opportunity" : null;
+}
+
+/** 機會搜尋頁的 hash（OS-05／#394）。只給 Super User／Super Admin——
+ *  進得來不代表看得到，`OpportunityPage` 自己依角色守門。 */
+export function opportunityHash(): string {
+  return "#/opportunity";
+}
+
+/** 目前是不是在機會搜尋頁。 */
+export function isOpportunityHash(hash: string): boolean {
+  return hash === opportunityHash();
 }
 
 /** Super Admin 管理中心的 hash（CLAUDE-SETTINGS-ROLE-IA-001）：從 Settings

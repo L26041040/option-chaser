@@ -2740,6 +2740,32 @@ body {
   margin-top: 12px;
 }
 
+/* OS-02（#391）：機會搜尋的門檻輸入框與它自己的「恢復預設」同一列；
+   `min-width: 0` 讓輸入框在窄螢幕上縮，而不是把按鈕擠出畫面。 */
+.settings-threshold-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.settings-threshold-row .settings-input {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.settings-threshold-row .pbtn {
+  flex: none;
+}
+
+.settings-fieldset {
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
 /* 三態的狀態點（Settings／#125）。顏色不是唯一線索——旁邊永遠有文字
    （「已連線」／「驗證失敗」／「尚未驗證」），色盲使用者不會漏掉資訊。 */
 .settings-dot {
@@ -4492,4 +4518,207 @@ body {
    22px（Playwright 實測），異常長的 pill 拉滿時才不會滑進編輯鈕底下。桌面 `.lib-cell-champion` 欄寬沒變，維持上面的 104px。 */
 .compact-strategy-row .compact-strategy-pill {
   max-width: calc(100% - var(--compact-actions-clearance));
+}
+
+/* ---------- 機會搜尋頁（OS-05／#394） ----------
+   沿用 Seed Warm 既有語彙（`.card`／`.pbtn`／`.tag`／`.tbl`／`.notice`），
+   只補這頁自己的排版。結果表在桌面是一般 `.tbl`；手機寬度下每一列改成
+   一張直排卡片（`td::before` 印欄名），不出現水平捲動。 */
+.opp-head {
+  flex-wrap: wrap;
+}
+
+.opp-fixture {
+  margin: 0;
+  flex-basis: 100%;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.opp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.opp-item {
+  padding: 10px 0;
+  min-width: 0;
+}
+
+.opp-item + .opp-item {
+  border-top: 0.5px solid var(--line);
+}
+
+.opp-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.opp-item-head strong {
+  font-size: 17px;
+}
+
+.opp-facts {
+  margin: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.opp-reasons {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.opp-thresholds {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 14px;
+}
+
+.opp-thresholds a {
+  color: var(--acc-text);
+  font-weight: 600;
+}
+
+.opp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.opp-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.opp-results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.opp-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
+.opp-sort select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  padding: 6px 12px;
+  max-width: 100%;
+}
+
+.opp-disclaimer {
+  margin: 0;
+}
+
+.opp-table td .row-note {
+  display: block;
+  font-size: 12px;
+}
+
+.opp-table .opp-return {
+  font-weight: 700;
+}
+
+.opp-table td.opp-save {
+  white-space: normal;
+}
+
+.opp-table td.opp-save .notice {
+  margin-top: 6px;
+  white-space: normal;
+  max-width: 280px;
+}
+
+@media (min-width: 1100px) {
+  .opp-table td {
+    height: auto;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+}
+
+@media (max-width: 1099.98px) {
+  .opp-table thead {
+    display: none;
+  }
+
+  .opp-table,
+  .opp-table tbody {
+    display: block;
+  }
+
+  .opp-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .opp-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .opp-table td {
+    display: block;
+    height: auto;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    text-align: left;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .opp-table td.r {
+    text-align: left;
+  }
+
+  .opp-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 11px;
+    color: var(--mute);
+  }
+
+  .opp-table td.opp-symbol {
+    font-size: 17px;
+    font-weight: 700;
+  }
+
+  .opp-table td.opp-save {
+    grid-column: 1 / -1;
+  }
 }

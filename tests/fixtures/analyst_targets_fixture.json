@@ -1,0 +1,2014 @@
+{
+ "name": "fixture",
+ "notice": "測試資料，非真實市場資料（OS-03／#392）；由 scripts/gen_analyst_targets_fixture.py 產生",
+ "symbols": {
+  "AAA": {
+   "coverage": "partial",
+   "history_from": "2023-01-05",
+   "records": [
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2023-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2023-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "88.00",
+     "published_on": "2024-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2024-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2025-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2025-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2026-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2026-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "105.00",
+     "published_on": "2026-09-01",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2023-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2023-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "92.00",
+     "published_on": "2024-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2024-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2025-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2025-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2026-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2026-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "110.00",
+     "published_on": "2026-09-02",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2023-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2023-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "96.00",
+     "published_on": "2024-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2024-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2025-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2025-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2026-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2026-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "115.00",
+     "published_on": "2026-09-03",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2023-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2023-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2024-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2024-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "120.00",
+     "published_on": "2026-09-04",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2023-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2023-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "104.00",
+     "published_on": "2024-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2024-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2025-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2025-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2026-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2026-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "125.00",
+     "published_on": "2026-09-05",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2023-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2023-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "108.00",
+     "published_on": "2024-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2024-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2025-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2025-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2026-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2026-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "130.00",
+     "published_on": "2026-09-06",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2023-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2023-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "112.00",
+     "published_on": "2024-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2024-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2025-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2025-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2026-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2026-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "135.00",
+     "published_on": "2026-09-07",
+     "action": "raise"
+    }
+   ],
+   "splits": []
+  },
+  "BBB": {
+   "coverage": "unknown",
+   "history_from": "2023-01-05",
+   "records": [
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2023-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2023-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2024-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2024-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2025-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2025-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2026-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "70.00",
+     "published_on": "2026-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "79.00",
+     "published_on": "2026-09-01",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2023-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2023-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2024-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2024-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2025-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2025-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2026-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "80.00",
+     "published_on": "2026-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "86.00",
+     "published_on": "2026-09-02",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2023-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2023-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2024-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2024-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2025-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2025-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2026-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "90.00",
+     "published_on": "2026-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "93.00",
+     "published_on": "2026-09-03",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2023-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2023-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2024-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2024-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-09-04",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2023-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2023-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2024-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2024-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2025-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2025-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2026-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "110.00",
+     "published_on": "2026-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "107.00",
+     "published_on": "2026-09-05",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2023-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2023-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2024-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2024-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2025-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2025-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2026-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "120.00",
+     "published_on": "2026-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "114.00",
+     "published_on": "2026-09-06",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2023-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2023-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2024-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2024-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2025-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2025-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2026-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "130.00",
+     "published_on": "2026-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "121.00",
+     "published_on": "2026-09-07",
+     "action": "raise"
+    }
+   ],
+   "splits": []
+  },
+  "CCC": {
+   "coverage": "complete",
+   "history_from": "2023-01-05",
+   "records": [
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2023-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2023-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2024-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2024-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2025-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2025-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2026-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "95.50",
+     "published_on": "2026-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "89.50",
+     "published_on": "2026-09-01",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2023-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2023-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2024-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2024-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2025-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2025-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2026-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "97.00",
+     "published_on": "2026-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "93.00",
+     "published_on": "2026-09-02",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2023-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2023-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2024-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2024-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2025-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2025-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2026-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "98.50",
+     "published_on": "2026-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "96.50",
+     "published_on": "2026-09-03",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2023-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2023-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2024-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2024-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-09-04",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2023-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2023-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2024-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2024-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2025-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2025-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2026-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "101.50",
+     "published_on": "2026-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "103.50",
+     "published_on": "2026-09-05",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2023-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2023-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2024-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2024-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2025-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2025-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2026-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "103.00",
+     "published_on": "2026-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "107.00",
+     "published_on": "2026-09-06",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2023-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2023-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2024-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2024-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2025-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2025-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2026-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "104.50",
+     "published_on": "2026-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "110.50",
+     "published_on": "2026-09-07",
+     "action": "raise"
+    }
+   ],
+   "splits": []
+  },
+  "DDD": {
+   "coverage": "unknown",
+   "history_from": "2023-01-05",
+   "records": [
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2023-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2023-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2024-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2024-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2025-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2025-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2026-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2026-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "91.00",
+     "published_on": "2026-09-01",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2023-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2023-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2024-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2024-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2025-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2025-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2026-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2026-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "94.00",
+     "published_on": "2026-09-02",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2023-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2023-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2024-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2024-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2025-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2025-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2026-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2026-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "97.00",
+     "published_on": "2026-09-03",
+     "action": "raise"
+    }
+   ],
+   "splits": []
+  },
+  "EEE": {
+   "coverage": "partial",
+   "history_from": "2023-01-05",
+   "records": [
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "328.00",
+     "published_on": "2023-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "328.00",
+     "published_on": "2023-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "328.00",
+     "published_on": "2024-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "328.00",
+     "published_on": "2024-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "328.00",
+     "published_on": "2025-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2025-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2026-01-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "82.00",
+     "published_on": "2026-07-05",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Alpha",
+     "firm": "Fixture Alpha",
+     "target_price": "98.00",
+     "published_on": "2026-09-01",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "352.00",
+     "published_on": "2023-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "352.00",
+     "published_on": "2023-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "352.00",
+     "published_on": "2024-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "352.00",
+     "published_on": "2024-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "352.00",
+     "published_on": "2025-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2025-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2026-01-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "88.00",
+     "published_on": "2026-07-06",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Beta",
+     "firm": "Fixture Beta",
+     "target_price": "102.00",
+     "published_on": "2026-09-02",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "376.00",
+     "published_on": "2023-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "376.00",
+     "published_on": "2023-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "376.00",
+     "published_on": "2024-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "376.00",
+     "published_on": "2024-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "376.00",
+     "published_on": "2025-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2025-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2026-01-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "94.00",
+     "published_on": "2026-07-07",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Gamma",
+     "firm": "Fixture Gamma",
+     "target_price": "106.00",
+     "published_on": "2026-09-03",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "400.00",
+     "published_on": "2023-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "400.00",
+     "published_on": "2023-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "400.00",
+     "published_on": "2024-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "400.00",
+     "published_on": "2024-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "400.00",
+     "published_on": "2025-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2025-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-01-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "100.00",
+     "published_on": "2026-07-08",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Delta",
+     "firm": "Fixture Delta",
+     "target_price": "110.00",
+     "published_on": "2026-09-04",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "424.00",
+     "published_on": "2023-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "424.00",
+     "published_on": "2023-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "424.00",
+     "published_on": "2024-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "424.00",
+     "published_on": "2024-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "424.00",
+     "published_on": "2025-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2025-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2026-01-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "106.00",
+     "published_on": "2026-07-09",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Epsilon",
+     "firm": "Fixture Epsilon",
+     "target_price": "114.00",
+     "published_on": "2026-09-05",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "448.00",
+     "published_on": "2023-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "448.00",
+     "published_on": "2023-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "448.00",
+     "published_on": "2024-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "448.00",
+     "published_on": "2024-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "448.00",
+     "published_on": "2025-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2025-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2026-01-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "112.00",
+     "published_on": "2026-07-10",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Zeta",
+     "firm": "Fixture Zeta",
+     "target_price": "118.00",
+     "published_on": "2026-09-06",
+     "action": "raise"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "472.00",
+     "published_on": "2023-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "472.00",
+     "published_on": "2023-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "472.00",
+     "published_on": "2024-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "472.00",
+     "published_on": "2024-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "472.00",
+     "published_on": "2025-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2025-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2026-01-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "118.00",
+     "published_on": "2026-07-11",
+     "action": "maintain"
+    },
+    {
+     "analyst_key": "Fixture Eta",
+     "firm": "Fixture Eta",
+     "target_price": "122.00",
+     "published_on": "2026-09-07",
+     "action": "raise"
+    }
+   ],
+   "splits": [
+    {
+     "effective_on": "2025-06-02",
+     "ratio": "4"
+    }
+   ]
+  },
+  "FFF": {
+   "coverage": "unknown",
+   "records": [],
+   "splits": [],
+   "cross_check": {
+    "consensus_mean_from_source": "150.00",
+    "n_from_source": 12
+   }
+  },
+  "GGG": {
+   "coverage": "unknown",
+   "records": [],
+   "splits": [],
+   "error": "逾時（測試資料模擬上游失敗）"
+  }
+ }
+}

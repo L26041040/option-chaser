@@ -44,6 +44,10 @@ class DigestSnapshot:
     identity_heals_today: int = 0
     identity_unknown_writes_refused_today: int = 0
     identity_cookie_renewals_today: int = 0
+    # OS-03（#392）：分析師共識每日更新統計；`None`＝來源尚未設定。
+    # 鍵：source、is_fixture、succeeded、failed、insufficient、selected
+    # （`api_app.consensus_cache.digest_counts()` 的輸出）。
+    consensus: dict | None = None
 
 
 def build_digest_text(snapshot: DigestSnapshot) -> str:
@@ -83,6 +87,19 @@ def build_digest_text(snapshot: DigestSnapshot) -> str:
     lines.append(f"  用已作廢憑證嘗試寫入（被拒、已換發）：{snapshot.identity_unknown_writes_refused_today}")
     lines.append(f"  兩腿互補（任一腿補回另一腿）：{snapshot.identity_heals_today}")
     lines.append(f"  cookie 門檻式續簽：{snapshot.identity_cookie_renewals_today}")
+    lines.append("")
+
+    lines.append("分析師共識更新（analyst consensus）——決定資料來源是否可靠")
+    c = snapshot.consensus
+    if c is None:
+        lines.append("  尚未設定分析師資料來源（今天沒有更新）")
+    else:
+        label = "（測試資料，非真實市場資料）" if c.get("is_fixture") else ""
+        lines.append(f"  來源：{c['source']}{label}")
+        lines.append(f"  成功：{c['succeeded']}")
+        lines.append(f"  失敗：{c['failed']}")
+        lines.append(f"  資料不足或無資料：{c['insufficient']}")
+        lines.append(f"  入選（預設門檻 20%／10%）：{c['selected']}")
     lines.append("")
 
     lines.append("系統健康 ／ vendor 用量 ／ 異常訊號（system health ＋ "

@@ -24,7 +24,8 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
-               BrowserIdentity, ChainBackoffEntry, ContractHistory,
+               BrowserIdentity, ChainBackoffEntry, ConsensusRefreshState,
+               ConsensusSnapshotRecord, ContractHistory,
                ResolvedCredential,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
@@ -163,6 +164,25 @@ CREATE TABLE IF NOT EXISTS dividend_cache (
     last_success_at   TEXT,
     market_day        TEXT,
     attempted_day     TEXT
+);
+-- 分析師共識快取（OS-03／#392）：**全站共用、不含 owner**。每個 symbol
+-- 每個美東交易日一筆 Snapshot（point-in-time 稽核紀錄，跨天累積）。
+CREATE TABLE IF NOT EXISTS consensus_snapshots (
+    symbol            TEXT NOT NULL,
+    as_of             TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    is_fixture        BOOLEAN NOT NULL,
+    snapshot          JSONB NOT NULL,
+    computed_at       TEXT NOT NULL,
+    PRIMARY KEY (symbol, as_of)
+);
+-- 每個 symbol 最後一次向資料來源嘗試的狀態（同日最多抓一次＋cron 游標）。
+CREATE TABLE IF NOT EXISTS consensus_refresh_state (
+    symbol            TEXT PRIMARY KEY,
+    source            TEXT NOT NULL,
+    attempted_day     TEXT NOT NULL,
+    attempted_at      TEXT NOT NULL,
+    error             TEXT
 );
 -- Treasury 利率曲線列快取（PERF-03／#179）：per-year——歷史 reconstruction
 -- 逐一觀測日查表，任何歷史日期的查詢結構上只可能被它所在年份的這筆
@@ -584,8 +604,12 @@ def _usage_from_dict(d: dict | None) -> UsageSetting:
 
 
 def _settings_blob(settings: DataSourceSettings) -> dict:
-    return {"market_data": _usage_to_dict(settings.market_data),
+    blob = {"market_data": _usage_to_dict(settings.market_data),
             "historical_iv": _usage_to_dict(settings.historical_iv)}
+    # OS-02（#391）：選填鍵——沒存過就不寫這個鍵，舊資料的 JSON 形狀不變。
+    if settings.opportunity_search is not None:
+        blob["opportunity_search"] = settings.opportunity_search
+    return blob
 
 
 def _settings_from_row(row, owner_id: str | None) -> DataSourceSettings:
@@ -593,7 +617,8 @@ def _settings_from_row(row, owner_id: str | None) -> DataSourceSettings:
     return DataSourceSettings(
         market_data=_usage_from_dict(blob.get("market_data")),
         historical_iv=_usage_from_dict(blob.get("historical_iv")),
-        updated_at=row[1], owner_id=owner_id)
+        updated_at=row[1], owner_id=owner_id,
+        opportunity_search=blob.get("opportunity_search"))
 
 
 def _row_to_scenario(row) -> Scenario:
@@ -1148,6 +1173,75 @@ class PostgresStorage:
                  entry.note, entry.last_success_at, entry.market_day,
                  entry.attempted_day))
 
+    # ---------- 分析師共識快取（OS-03／#392） ----------
+
+    def save_consensus_snapshot(self, record: ConsensusSnapshotRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO consensus_snapshots "
+                "(symbol, as_of, source, is_fixture, snapshot, computed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol, as_of) DO UPDATE "
+                "SET source = EXCLUDED.source, is_fixture = EXCLUDED.is_fixture, "
+                "snapshot = EXCLUDED.snapshot, computed_at = EXCLUDED.computed_at",
+                (record.symbol, record.as_of, record.source, record.is_fixture,
+                 Jsonb(record.snapshot), record.computed_at))
+
+    def latest_consensus_snapshots(self, symbols: Sequence[str], *,
+                                   source: str) -> dict[str, ConsensusSnapshotRecord]:
+        symbols = list(symbols)
+        if not symbols:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (symbol) symbol, as_of, source, is_fixture, "
+                "snapshot, computed_at FROM consensus_snapshots "
+                "WHERE symbol = ANY(%s) AND source = %s "
+                "ORDER BY symbol, as_of DESC", (symbols, source)).fetchall()
+        return {r[0]: ConsensusSnapshotRecord(symbol=r[0], as_of=r[1], source=r[2],
+                                              is_fixture=r[3], snapshot=r[4],
+                                              computed_at=r[5])
+                for r in rows}
+
+    def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO consensus_refresh_state "
+                "(symbol, source, attempted_day, attempted_at, error) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE "
+                "SET source = EXCLUDED.source, "
+                "attempted_day = EXCLUDED.attempted_day, "
+                "attempted_at = EXCLUDED.attempted_at, error = EXCLUDED.error",
+                (state.symbol, state.source, state.attempted_day,
+                 state.attempted_at, state.error))
+
+    def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, source, attempted_day, attempted_at, error "
+                "FROM consensus_refresh_state").fetchall()
+        return {r[0]: ConsensusRefreshState(symbol=r[0], source=r[1],
+                                            attempted_day=r[2], attempted_at=r[3],
+                                            error=r[4])
+                for r in rows}
+
+    def opportunity_custom_symbols(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT jsonb_array_elements_text("
+                "settings->'opportunity_search'->'custom_symbols') "
+                "FROM owner_settings s "
+                "WHERE jsonb_typeof(settings->'opportunity_search'->'custom_symbols') "
+                "= 'array' AND ("
+                "EXISTS (SELECT 1 FROM owners o WHERE o.owner_id = s.owner_id "
+                "AND o.role IN ('superuser', 'superadmin')) OR "
+                "EXISTS (SELECT 1 FROM browser_identities b "
+                "JOIN owners o2 ON o2.owner_id = b.owner_id "
+                "WHERE b.owner_id = s.owner_id "
+                "AND b.role IN ('superuser', 'superadmin')))").fetchall()
+        return sorted(r[0] for r in rows)
+
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
     def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
@@ -1346,7 +1440,8 @@ class PostgresStorage:
         "superuser_audit_log", "rate_limits", "operational_metrics",
         "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff",
-        "main_account", "owner_merge_archive", "identity_tombstones")
+        "main_account", "owner_merge_archive", "identity_tombstones",
+        "consensus_snapshots", "consensus_refresh_state")
 
     def table_row_counts(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -1396,7 +1491,8 @@ class PostgresStorage:
         **明確不觸碰**的 shared market facts 表（system-wide，與任何
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
-        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
+        `consensus_snapshots`／`consensus_refresh_state`
         ——這些表結構上就沒有 `owner_id` 欄位，本方法從不觸碰它們。
 
         刪除 `browser_identities`／`owners` 的理由（PB-04 §7
@@ -1911,6 +2007,30 @@ class PostgresStorage:
                 "settings = EXCLUDED.settings, "
                 "updated_at = EXCLUDED.updated_at",
                 (owner, Jsonb(_settings_blob(settings)), settings.updated_at))
+
+    def update_settings(self, owner, mutate):
+        owner = require_owner(owner)
+        with self._connect() as conn:
+            with conn.transaction():
+                # advisory lock 先排隊：從沒存過（還沒有列可鎖）的 owner 也一樣
+                # 依序執行；交易結束自動釋放。
+                conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                             (f"owner_settings:{owner}",))
+                row = conn.execute(
+                    "SELECT settings, updated_at FROM owner_settings "
+                    "WHERE owner_id = %s FOR UPDATE", (owner,)).fetchone()
+                updated = mutate(_settings_from_row(row, owner)
+                                 if row is not None else None)
+                if require_owner(updated.owner_id) != owner:
+                    raise ValueError("update_settings 不能改寫成別的 owner")
+                conn.execute(
+                    "INSERT INTO owner_settings (owner_id, settings, updated_at) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (owner_id) DO UPDATE SET "
+                    "settings = EXCLUDED.settings, "
+                    "updated_at = EXCLUDED.updated_at",
+                    (owner, Jsonb(_settings_blob(updated)), updated.updated_at))
+        return updated
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None:
         owner = require_owner(owner)

@@ -24,10 +24,12 @@ from typing import Callable, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from option_chaser import __version__, ivpipeline, service, store
+from option_chaser.consensus import TARGET_MONTH_RULES, ConsensusRules
 from option_chaser.data import treasury as treasury_data
 from option_chaser.data.snapshot import snapshot_from_dict, snapshot_to_csv
 from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
@@ -37,7 +39,9 @@ from option_chaser.service import DividendLoader, RateCurveLoader
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
-from . import abuse_control, data_lifecycle, main_account
+from . import abuse_control, consensus_cache, data_lifecycle, main_account, opportunity_settings
+from . import opportunity_search
+from .analyst_source import AnalystSource
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
 from .clock import now_utc_iso, ny_today
@@ -508,6 +512,10 @@ class UsageRequest(BaseModel):
 class SettingsRequest(BaseModel):
     market_data: UsageRequest
     historical_iv: UsageRequest
+    # OS-02（#391）：選填。**省略＝保留已存的值**——只送既有兩鍵的舊版
+    # 前端（例如只存資料來源）不能順手把機會搜尋設定抹掉。送了也只更新
+    # 有送的欄位（`opportunity_settings.merge()`）。
+    opportunity_search: opportunity_settings.OpportunitySearchRequest | None = None
 
 
 class CredentialRequest(BaseModel):
@@ -870,6 +878,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                storage_alert_cap_bytes: int | None = None,
                cleanup_missed_days_threshold: int | None = None,
                chain_error_rate_threshold: float | None = None,
+               analyst_source: AnalystSource | None = None,
+               opportunity_fetch_cap: int | None = None,
+               consensus_rules: ConsensusRules | None = None,
+               target_month_rule: str | None = None,
+               consensus_refresh_symbol_cap: int | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -955,6 +968,29 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     設計——production 永遠只有一條路徑（cookie），這條分支只服務主動
     選擇繞過它的呼叫端（既有 `test_scale06`／`test_scale11` 大量依賴
     這個 DI 注入點做多身份隔離測試）。
+
+    `analyst_source`（OS-03／#392）：分析師目標價資料來源
+    （`api_app.analyst_source.AnalystSource`）。**預設 `None`＝尚未設定**：
+    本輪沒有任何真實來源，共識清單回 `configured: false`、每日 cron
+    回 `skipped`。測試與本機驗證腳本才注入 `FixtureAnalystSource`。
+
+    `opportunity_fetch_cap`（OS-04／#393）：一次機會搜尋最多處理幾檔
+    （入選數或 `symbols` 超過就只取前 N 檔、超出的放 `deferred`、回應標
+    `truncated`）。`None` 讀環境變數 `OPPORTUNITY_FETCH_CAP`，再落回
+    `opportunity_search.DEFAULT_FETCH_CAP`（50，數值待 #386）。
+
+    `consensus_rules`／`target_month_rule`（user story 40：保持可設定、
+    不寫死）：資料品質規則 R（`option_chaser.consensus.ConsensusRules`）與
+    Consensus Scenario 的 target_month 規則（`consensus.TARGET_MONTH_RULES`
+    之一）。`None` ＝暫定預設（`consensus_cache.DEFAULT_RULES`／
+    `DEFAULT_TARGET_MONTH_RULE`，待 #385／#381）。注入的值同時用於每日
+    更新、共識清單（`rules` 區塊照實回報）與搜尋；不認得的月份規則在
+    建 app 時就拒絕（`ValueError`），不留到第一次請求才炸。
+
+    `consensus_refresh_symbol_cap`：每日共識更新母體的總上限（樣本優先，
+    見 `consensus_cache.refresh_universe()`）。`None` 讀環境變數
+    `CONSENSUS_REFRESH_SYMBOL_CAP`，再落回
+    `consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP`（200，數值待 #386）。
 
     `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
     warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
@@ -1196,6 +1232,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     _effective_global_vendor_daily_budget = (
         global_vendor_daily_budget if global_vendor_daily_budget is not None
         else _env_int("GLOBAL_VENDOR_DAILY_BUDGET", GLOBAL_VENDOR_DAILY_BUDGET))
+    # OS-04（#393）：同一套慣例；至少 1 檔（0 或負數沒有「停用搜尋」的意思）。
+    _effective_opportunity_fetch_cap = max(1, (
+        opportunity_fetch_cap if opportunity_fetch_cap is not None
+        else _env_int("OPPORTUNITY_FETCH_CAP", opportunity_search.DEFAULT_FETCH_CAP)))
+    _effective_consensus_rules = consensus_rules or consensus_cache.DEFAULT_RULES
+    _effective_target_month_rule = (target_month_rule
+                                    or consensus_cache.DEFAULT_TARGET_MONTH_RULE)
+    if _effective_target_month_rule not in TARGET_MONTH_RULES:
+        raise ValueError(f"未知的 target_month 規則：{_effective_target_month_rule!r}"
+                         f"（可用 {TARGET_MONTH_RULES}）")
+    _effective_consensus_refresh_symbol_cap = max(1, (
+        consensus_refresh_symbol_cap if consensus_refresh_symbol_cap is not None
+        else _env_int("CONSENSUS_REFRESH_SYMBOL_CAP",
+                      consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP)))
     # PB-08（#300）：同一套注入／環境變數慣例，但**沒有**「`<=0` 停用」
     # 語意——Codex P1（PR #346）：這三個是清理的天數，0 或負數不是
     # 「關掉清理」，而是「立刻就可以刪」。照其他變數的 `<=0` 慣例設下去
@@ -1992,6 +2042,28 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         curve, note = _rate_curve_loader()(ny_today())
         return {"ok": curve is not None, "note": note}
 
+    # ---------- 分析師共識每日更新（OS-03／#392） ----------
+
+    @app.get("/api/cron/consensus-refresh")
+    def cron_consensus_refresh(request: Request) -> dict:
+        """每日一次（`vercel.json` crons）。來源未設定時什麼都不做。
+
+        母體 = 大型股樣本 ∪ SU／SA 的自訂清單（總數有上限）；同一交易日每檔
+        最多抓一次上游，一次呼叫受 `refresh_run_budget` 約束，跑不完的由下一次
+        觸發接續（游標＝每檔的 attempted_day，見 `api_app/consensus_cache.py`）。
+        授權失敗先驗證再動作，比照其他 cron。"""
+        if not _cron_authorized(request):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        if analyst_source is None:
+            return {"skipped": "source_not_configured"}
+        deadline = time.monotonic() + refresh_run_budget.total_seconds()
+        universe = consensus_cache.refresh_universe(
+            _db(), cap=_effective_consensus_refresh_symbol_cap)
+        return consensus_cache.refresh_symbols(
+            _db(), analyst_source, universe, ny_today(),
+            budget_exhausted=lambda: time.monotonic() >= deadline,
+            rules=_effective_consensus_rules)
+
     # ---------- 匿名擁有者生命週期清理（PB-08／#300） ----------
 
     @app.get("/api/cron/cleanup-abandoned-owners")
@@ -2214,7 +2286,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             identity_unknown_today=identity_unknown,
             identity_heals_today=identity_heals,
             identity_unknown_writes_refused_today=identity_unknown_refused,
-            identity_cookie_renewals_today=identity_renewals)
+            identity_cookie_renewals_today=identity_renewals,
+            consensus=consensus_cache.digest_counts(_db(), analyst_source, today))
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
@@ -3842,8 +3915,149 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             # 「畫面以為鎖著、其實已經發了請求」這種正好違反 AC 的狀態。
             "historical_iv_enabled": _historical_iv_enabled(
                 usages[providers.HISTORICAL_IV], creds),
+            # OS-02（#391）：沒存過就是預設；選項清單與預設值也由後端給，
+            # 前端不自己寫一份母體文案或家族清單。
+            "opportunity_search": opportunity_settings.effective(
+                stored.opportunity_search if stored else None),
+            "opportunity_search_options": opportunity_settings.options(),
             "updated_at": stored.updated_at if stored else None,
         }
+
+    # ---------- 機會搜尋：共識清單（OS-03／#392） ----------
+
+    def _require_opportunity_role() -> None:
+        """資料顯示授權未確認前只開放 SU／SA（#389 §7）；Normal 回 403。"""
+        if superuser.current_role() < superuser.Role.SUPERUSER:
+            raise HTTPException(status_code=403,
+                                detail="機會搜尋目前只開放 Super User／Super Admin")
+
+    @app.get("/api/opportunity/consensus")
+    def opportunity_consensus() -> dict:
+        """共識清單：只讀全站共識快取、不打上游；讀取時才套用這位使用者的
+        兩道門檻（`opportunity_search` 設定），改門檻立即生效。"""
+        _require_opportunity_role()
+        stored = _db().get_settings(owner=identity_resolver())
+        opportunity = opportunity_settings.effective(
+            stored.opportunity_search if stored else None)
+        return consensus_cache.consensus_view(
+            _db(), analyst_source, opportunity, ny_today(),
+            rules=_effective_consensus_rules,
+            target_month_rule=_effective_target_month_rule)
+
+    # ---------- 機會搜尋：跨標的搜尋（OS-04／#393） ----------
+
+    @app.post("/api/opportunity/search")
+    def opportunity_search_run(body: opportunity_search.SearchRequest) -> dict:
+        """為共識入選股逐檔跑**既有**分析，回傳每個家族的代表候選摘要列。
+
+        - 省略 `symbols` ＝ 共識清單的入選集合（`consensus_cache.
+          selected_items()`，與 `GET /api/opportunity/consensus` 同一份）；
+          傳了必須是它的子集（續跑時傳回上次的 `remaining`），否則 400。
+          超過 `fetch_cap` 只取前 N 檔、其餘原樣放 `deferred`（`truncated:
+          true`），不自動續跑——使用者明確以 `symbols=deferred` 再搜尋一次。
+        - 每檔：`target_price = mean`、`target_month` 取清單項目（#390 暫定
+          規則）→ **既有** `_fetch_chain()`（Global Vendor Fuse、429 退避）
+          → **既有** `_analyze()` → `opportunity_search.rows_for_symbol()`
+          （既有 `store.representative_candidates_by_family()` 投影）。搜尋
+          自己不算任何損益／報酬／成本、不過濾；完整 view 不落地。
+        - 沿用 Refresh Run 的 `refresh_run_group_limit`（每次一檔）與
+          `refresh_run_budget`；其餘放 `remaining`。`processed` ∪
+          `remaining` ＝ 本次輸入，互不重疊；`failures` ⊆ `processed`。
+        - Global Vendor Fuse 熔斷：停止、該檔與其後全部回 `remaining`、
+          `stopped_reason: "fused"`，`message` 沿用既有降級文案。
+        """
+        _require_opportunity_role()
+        if analyst_source is None:
+            raise HTTPException(status_code=409,
+                                detail=consensus_cache.NOT_CONFIGURED_MESSAGE)
+        db = _db()
+        today = ny_today()
+        stored = db.get_settings(owner=identity_resolver())
+        settings = opportunity_settings.effective(
+            stored.opportunity_search if stored else None)
+        families = [f for f in FAMILIES
+                    if f in (body.strategies or settings["strategies"])]
+        sort = body.sort or settings["sort"]
+        selected = {i["symbol"]: i for i in consensus_cache.selected_items(
+            db, analyst_source, settings, today,
+            target_month_rule=_effective_target_month_rule)}
+        if body.symbols is None:
+            requested = list(selected)
+        else:
+            requested = list(dict.fromkeys(body.symbols))
+            outside = [s for s in requested if s not in selected]
+            if outside:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"這些代號不在目前的入選清單：{'、'.join(outside)}")
+        # 超過單次上限的檔不丟掉、也不自動續跑（那會繞過上限）：放進
+        # `deferred` 交回去，使用者明確再發一次搜尋才處理（#389 §8）。
+        cap = _effective_opportunity_fetch_cap
+        queue, deferred = requested[:cap], requested[cap:]
+        subtypes = subtypes_of(normalize_families(families))
+
+        rows: list[dict] = []
+        failures: list[dict] = []
+        processed: list[str] = []
+        remaining: list[str] = []
+        stopped_reason: str | None = None
+        message: str | None = None
+        fetches_used = 0
+        deadline = time.monotonic() + refresh_run_budget.total_seconds()
+
+        def fail(symbol: str, reason: str, text: str, **extra) -> None:
+            failures.append({"symbol": symbol, "reason": reason,
+                             "message": text, **extra})
+
+        for index, symbol in enumerate(queue):
+            if fetches_used and (fetches_used >= refresh_run_group_limit
+                                 or time.monotonic() >= deadline):
+                remaining = queue[index:]
+                break
+            item = selected[symbol]
+            month = item["target_month"]
+            if month is None or month_is_over(TargetMonth.from_key(month), today):
+                processed.append(symbol)
+                fail(symbol, "invalid_month", f"{symbol} 的目標月份無效，略過")
+                continue
+            scenario = opportunity_search.scenario_params(symbol, item, month, families)
+            fetches_used += 1
+            try:
+                snap = _fetch_chain(symbol)
+            except FetchError as e:
+                detail = _classify_fetch_failure(db, e, symbol).detail
+                if isinstance(e, vendor_fuse.GlobalVendorFuseTripped):
+                    stopped_reason, message = "fused", detail["message"]
+                    remaining = queue[index:]
+                    break
+                processed.append(symbol)
+                fail(symbol, "fetch_failed", detail["message"], stage=detail["stage"])
+                continue
+            processed.append(symbol)
+            try:
+                view, _snapshot = _analyze(
+                    scenario_id=f"opportunity-search:{symbol}", symbol=symbol,
+                    target_price=scenario["target_price"], target_month=month,
+                    strategies=subtypes, snap=snap)
+            except HTTPException as e:
+                detail = e.detail if isinstance(e.detail, dict) else {}
+                fail(symbol, "analysis_failed",
+                     detail.get("message", str(e.detail)), stage=detail.get("stage"))
+                continue
+            found = opportunity_search.rows_for_symbol(view, item=item,
+                                                       scenario=scenario)
+            if not found:
+                fail(symbol, "no_candidates", f"{symbol} 沒有合格候選")
+                continue
+            rows.extend(found)
+        return {"rows": opportunity_search.sort_rows(rows, sort),
+                "failures": failures, "remaining": remaining,
+                "processed": processed, "fetches_used": fetches_used,
+                "fetch_cap": cap, "truncated": bool(deferred),
+                "deferred": deferred,
+                "stopped_reason": stopped_reason, "message": message,
+                "sort": sort, "strategies": families,
+                "sort_options": opportunity_settings.sort_options()}
 
     def _historical_iv_enabled(iv: UsageSetting, creds: dict[str, dict]) -> bool:
         """Historical IV 模組解鎖的唯一判準（#126）。
@@ -3882,12 +4096,40 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.put("/api/settings")
     def put_settings(req: SettingsRequest) -> dict:
-        _db().save_settings(DataSourceSettings(
-            market_data=UsageSetting(mode=req.market_data.mode,
-                                     provider=req.market_data.provider),
-            historical_iv=UsageSetting(mode=req.historical_iv.mode,
-                                       provider=req.historical_iv.provider),
-            updated_at=now_utc_iso(), owner_id=_persistent_owner()))
+        # 機會搜尋設定只開放 SU／SA 寫（#389 §7）：Normal／匿名送了
+        # `opportunity_search` 就整個請求 403、什麼都不寫——它的自訂清單
+        # 會進全站每日共識更新的母體，不能讓任何人往裡塞。不帶這個鍵的
+        # 請求（既有兩列資料源）對所有人照舊。先檢查權限、才建立 owner。
+        if req.opportunity_search is not None:
+            _require_opportunity_role()
+        owner = _persistent_owner()
+
+        def merged(stored: DataSourceSettings | None) -> DataSourceSettings:
+            previous = stored.opportunity_search if stored else None
+            opportunity = previous
+            if req.opportunity_search is not None:
+                try:
+                    opportunity = opportunity_settings.merge(previous,
+                                                             req.opportunity_search)
+                except opportunity_settings.OpportunitySearchInvalid as e:
+                    # 跨欄位規則合併後才看得出來；組成與欄位驗證相同形狀的
+                    # 422，前端只需要認一種錯誤格式。
+                    raise RequestValidationError([{
+                        "type": "value_error",
+                        "loc": ("body", "opportunity_search", e.field),
+                        "msg": f"Value error, {e}",
+                        "input": None}]) from None
+            return DataSourceSettings(
+                market_data=UsageSetting(mode=req.market_data.mode,
+                                         provider=req.market_data.provider),
+                historical_iv=UsageSetting(mode=req.historical_iv.mode,
+                                           provider=req.historical_iv.provider),
+                updated_at=now_utc_iso(), owner_id=owner,
+                opportunity_search=opportunity)
+
+        # 部分更新的「讀 → 合併 → 寫」必須原子：兩個分頁同時各存一道門檻，
+        # 兩個都要留下（`Storage.update_settings()` 鎖住這個 owner 的設定）。
+        _db().update_settings(owner, merged)
         # 刻意不寫事件紀錄：這條路徑上有 provider id 沒問題，但把設定變更
         # 寫進 append-only 紀錄會讓「token 絕不進事件紀錄」這條 AC 從
         # 「結構上不可能」退成「靠這裡沒寫錯」。設定是單一狀態、不是需要

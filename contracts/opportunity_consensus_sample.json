@@ -1,0 +1,242 @@
+{
+  "source": {
+    "configured": true,
+    "name": "fixture",
+    "is_fixture": true
+  },
+  "universe": {
+    "id": "custom",
+    "label": "自訂清單",
+    "provisional": false,
+    "symbols": 7,
+    "with_data": 5,
+    "insufficient": 1,
+    "coverage": {
+      "complete": 1,
+      "partial": 2,
+      "unknown": 2
+    },
+    "as_of": "2026-09-28"
+  },
+  "thresholds": {
+    "percentile_max": 20.0,
+    "dispersion_max": 10.0
+  },
+  "rules": {
+    "rules_version": "provisional-389",
+    "provisional": true,
+    "n_min": 5,
+    "validity_months": 12,
+    "freshness_days": 90,
+    "freshness_min_share": 0.5,
+    "h_min": 24,
+    "stdev_kind": "sample",
+    "lookback_points": 60,
+    "sampling": "month_end",
+    "target_month_rule": "fixed_12m"
+  },
+  "items": [
+    {
+      "symbol": "AAA",
+      "status": "ok",
+      "as_of": "2026-09-28",
+      "n_analysts": 7,
+      "mean": 120.0,
+      "stdev": 10.801234497346433,
+      "dispersion": 0.09001028747788695,
+      "percentile": 0.13636363636363635,
+      "history_points": 44,
+      "coverage": "partial",
+      "freshness_share": 1.0,
+      "high": 135.0,
+      "low": 105.0,
+      "median_published_on": "2026-09-04",
+      "reasons": [],
+      "gate": {
+        "first": true,
+        "second": true,
+        "selected": true,
+        "reasons": []
+      },
+      "target_month": "2027-09",
+      "rules_version": "provisional-389",
+      "refresh_error": null
+    },
+    {
+      "symbol": "BBB",
+      "status": "ok",
+      "as_of": "2026-09-28",
+      "n_analysts": 7,
+      "mean": 100.0,
+      "stdev": 15.121728296285006,
+      "dispersion": 0.15121728296285009,
+      "percentile": 0.0,
+      "history_points": 44,
+      "coverage": "unknown",
+      "freshness_share": 1.0,
+      "high": 121.0,
+      "low": 79.0,
+      "median_published_on": "2026-09-04",
+      "reasons": [],
+      "gate": {
+        "first": true,
+        "second": false,
+        "selected": false,
+        "reasons": [
+          "dispersion: 0.1512172829628500720558725735 > 0.1"
+        ]
+      },
+      "target_month": "2027-09",
+      "rules_version": "provisional-389",
+      "refresh_error": null
+    },
+    {
+      "symbol": "CCC",
+      "status": "ok",
+      "as_of": "2026-09-28",
+      "n_analysts": 7,
+      "mean": 100.0,
+      "stdev": 7.560864148142503,
+      "dispersion": 0.07560864148142504,
+      "percentile": 1.0,
+      "history_points": 44,
+      "coverage": "complete",
+      "freshness_share": 1.0,
+      "high": 110.5,
+      "low": 89.5,
+      "median_published_on": "2026-09-04",
+      "reasons": [],
+      "gate": {
+        "first": false,
+        "second": true,
+        "selected": false,
+        "reasons": [
+          "percentile: 1 > 0.2"
+        ]
+      },
+      "target_month": "2027-09",
+      "rules_version": "provisional-389",
+      "refresh_error": null
+    },
+    {
+      "symbol": "DDD",
+      "status": "insufficient_analysts",
+      "as_of": "2026-09-28",
+      "n_analysts": 3,
+      "mean": 94.0,
+      "stdev": 3.0,
+      "dispersion": 0.031914893617021274,
+      "percentile": null,
+      "history_points": 0,
+      "coverage": "unknown",
+      "freshness_share": 1.0,
+      "high": 97.0,
+      "low": 91.0,
+      "median_published_on": "2026-09-02",
+      "reasons": [
+        "insufficient_analysts: 有效分析師 3 < N_min 5",
+        "insufficient_history: 合格歷史點 0 < H_min 24"
+      ],
+      "gate": {
+        "first": false,
+        "second": false,
+        "selected": false,
+        "reasons": [
+          "insufficient_analysts: 有效分析師 3 < N_min 5",
+          "insufficient_history: 合格歷史點 0 < H_min 24"
+        ]
+      },
+      "target_month": "2027-09",
+      "rules_version": "provisional-389",
+      "refresh_error": null
+    },
+    {
+      "symbol": "EEE",
+      "status": "ok",
+      "as_of": "2026-09-28",
+      "n_analysts": 7,
+      "mean": 110.0,
+      "stdev": 8.640987597877148,
+      "dispersion": 0.07855443270797406,
+      "percentile": 0.0,
+      "history_points": 44,
+      "coverage": "partial",
+      "freshness_share": 1.0,
+      "high": 122.0,
+      "low": 98.0,
+      "median_published_on": "2026-09-04",
+      "reasons": [],
+      "gate": {
+        "first": true,
+        "second": true,
+        "selected": true,
+        "reasons": []
+      },
+      "target_month": "2027-09",
+      "rules_version": "provisional-389",
+      "refresh_error": null
+    },
+    {
+      "symbol": "FFF",
+      "status": "no_data",
+      "as_of": "2026-09-28",
+      "n_analysts": 0,
+      "mean": null,
+      "stdev": null,
+      "dispersion": null,
+      "percentile": null,
+      "history_points": 0,
+      "coverage": "unknown",
+      "freshness_share": null,
+      "high": null,
+      "low": null,
+      "median_published_on": null,
+      "reasons": [
+        "no_data: 來源僅有共識值，沒有個別目標價",
+        "insufficient_history: 合格歷史點 0 < H_min 24"
+      ],
+      "gate": {
+        "first": false,
+        "second": false,
+        "selected": false,
+        "reasons": [
+          "no_data: 來源僅有共識值，沒有個別目標價",
+          "insufficient_history: 合格歷史點 0 < H_min 24"
+        ]
+      },
+      "target_month": "2027-09",
+      "rules_version": "provisional-389",
+      "refresh_error": null
+    },
+    {
+      "symbol": "GGG",
+      "status": "source_error",
+      "as_of": null,
+      "n_analysts": 0,
+      "mean": null,
+      "stdev": null,
+      "dispersion": null,
+      "percentile": null,
+      "history_points": 0,
+      "coverage": null,
+      "freshness_share": null,
+      "high": null,
+      "low": null,
+      "median_published_on": null,
+      "reasons": [
+        "source_error: 逾時（測試資料模擬上游失敗）"
+      ],
+      "gate": {
+        "first": false,
+        "second": false,
+        "selected": false,
+        "reasons": [
+          "source_error: 逾時（測試資料模擬上游失敗）"
+        ]
+      },
+      "target_month": null,
+      "rules_version": null,
+      "refresh_error": null
+    }
+  ]
+}
