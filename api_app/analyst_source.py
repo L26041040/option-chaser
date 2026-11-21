@@ -1,9 +1,10 @@
 """分析師目標價資料來源介面（OS-03／#392，母票 #389 §2）。
 
-`create_app(analyst_source=...)` 注入一個 `AnalystSource`；**預設 `None`
-＝尚未設定**。本輪**沒有任何真實來源**（Yahoo 等自動擷取屬獨立決策，
-#389 §12 B1–B3，未啟用）——未設定時共識清單誠實顯示「尚未設定」，
-每日 cron 什麼都不做。
+`create_app(analyst_source=...)` 注入一個 `AnalystSource`；`create_app()` 的
+**預設 `None`＝尚未設定**（測試用）。部署環境由 `api/index.py` 經
+`analyst_source_from_env()` 注入真實來源 `YahooAnalystSource`（LIVE-T1／#397；
+Owner 決策見 #389 LIVE-DATA-DELIVERY-001），`OC_ANALYST_SOURCE=off` 可緊急關閉；
+未設定時共識清單誠實顯示「尚未設定」，每日 cron 什麼都不做。
 
 `FixtureAnalystSource` 讀固定 JSON（`tests/fixtures/analyst_targets_fixture.json`，
 ticker 為不存在的 AAA…GGG），**只在測試與本機驗證腳本裡注入**；它的
@@ -104,3 +105,72 @@ class FixtureAnalystSource:
             cross_check=ConsensusCrossCheck(
                 consensus_mean_from_source=Decimal(cross["consensus_mean_from_source"]),
                 n_from_source=cross.get("n_from_source")) if cross else None)
+
+
+class YahooAnalystSource:
+    """真實來源：Yahoo `upgradeDowngradeHistory`（LIVE-T1／#397）。不需要金鑰。
+
+    - 每筆紀錄的 `analyst_key` 是券商名稱經 `FIRM_ALIASES` 正規化後的值；
+      `firm` 保留 Yahoo 的原名供顯示。
+    - Yahoo 沒有「終止覆蓋」事件 → `coverage` 一律 `partial`（研究已確認）。
+    - `financialData` 的共識平均／人數只進 `cross_check`（L9）。
+    - 失敗收斂成 `ProviderResult(error=...)`，不丟例外。
+    """
+
+    name = "yahoo-udh"
+    is_fixture = False
+
+    def __init__(self, transport=None):
+        from option_chaser.data.yahoo_analyst import YahooClient
+        self._client = YahooClient(transport)
+
+    def fetch(self, symbol: str, today: date) -> ProviderResult:
+        from option_chaser.data.yahoo_analyst import YahooError
+        try:
+            data = self._client.fetch(symbol)
+        except YahooError as e:
+            hint = f"（Retry-After {e.retry_after} 秒）" if e.retry_after else ""
+            return ProviderResult(coverage="partial", error=f"{e}{hint}")
+        return self.result_from(symbol, data)
+
+    def result_from(self, symbol: str, data) -> ProviderResult:
+        """把已抓到的 `YahooSymbolData` 轉成 `ProviderResult`（實測腳本也用它，
+        免得為了統計再打一次上游）。"""
+        from option_chaser.data.yahoo_analyst import FIRM_ALIASES, split_basis_through
+        retrieved = datetime.now(timezone.utc)
+        splits = tuple(SplitEvent(symbol=symbol, effective_on=s.effective_on,
+                                  ratio=s.ratio) for s in data.splits)
+        records = []
+        for t in data.targets:
+            key = " ".join(t.firm.split()).casefold()
+            records.append(AnalystTargetRecord(
+                symbol=symbol, analyst_key=FIRM_ALIASES.get(key, t.firm),
+                firm=t.firm, target_price=t.target_price,
+                published_on=t.published_on, source=f"{self.name}:quoteSummary",
+                action=t.action, prior_target=t.prior_target,
+                retrieved_at=retrieved,
+                split_adjusted_through=split_basis_through(
+                    t, data.splits, data.weekly_closes)))
+        cross = (ConsensusCrossCheck(consensus_mean_from_source=data.consensus_mean,
+                                     n_from_source=data.analyst_count)
+                 if data.consensus_mean is not None else None)
+        return ProviderResult(
+            records=tuple(records), splits=splits, coverage="partial",
+            history_from=min((r.published_on for r in records), default=None),
+            cross_check=cross)
+
+
+ANALYST_SOURCE_ENV = "OC_ANALYST_SOURCE"
+_DISABLED = {"off", "none", "disabled", "0", "false"}
+
+
+def analyst_source_from_env(env=None) -> AnalystSource | None:
+    """部署環境（`api/index.py`）用的來源：**預設啟用 Yahoo**（不需要金鑰）；
+    `OC_ANALYST_SOURCE=off` 是緊急關閉開關，關閉時回到「尚未設定」。
+    `create_app()` 本身的預設仍是 `None`——上千條測試直接呼叫它，不能讓測試
+    意外連外網。"""
+    import os
+    value = ((env if env is not None else os.environ).get(ANALYST_SOURCE_ENV) or "").strip()
+    if value.casefold() in _DISABLED:
+        return None
+    return YahooAnalystSource()
