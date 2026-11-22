@@ -11,8 +11,13 @@
  *   拒絕時（409／429）照實顯示後端訊息。
  * - 只在 SU／SA 才會被渲染（`OpportunityPage` 的守門）；每次更新或重試結束
  *   都重讀狀態，並通知頁面重讀共識清單（`onUpdated`）。
+ * - LIVE-T5（#401）：區塊頂端是「資料狀態」——資料來源（真實或測試）、資料日、
+ *   已建立／母體檔數、入選檔數——與目前的狀態（`dataPhase()`：就緒／建立中／
+ *   更新失敗／已達今日上限）。每個狀態一句話說下一步，主按鈕跟著狀態換字：
+ *   建立中是「開始建立」或「繼續更新」，已達今日上限時停用並說明何時自動更新；
+ *   就緒時主要動作是下方入選股的「搜尋選擇權」，這裡的更新鈕退為次要樣式。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   getConsensusRefreshStatus,
@@ -20,8 +25,19 @@ import {
   type ConsensusRefreshProgress,
   type ConsensusRefreshStatusResponse,
   type ConsensusRefreshSymbol,
+  type OpportunityConsensusResponse,
 } from "./api";
-import { isFailed, progressText, retryGate } from "./consensusUpdate";
+import {
+  builtCount,
+  capReached,
+  dataPhase,
+  isFailed,
+  nextAutoUpdate,
+  progressText,
+  retryGate,
+  type DataPhase,
+  type RetryContext,
+} from "./consensusUpdate";
 
 type StatusLoad =
   | { state: "loading" }
@@ -51,7 +67,20 @@ function useNow(active: boolean): number {
   return now;
 }
 
-export default function AnalystUpdatePanel({ onUpdated }: { onUpdated: () => void }) {
+const PHASE_LABELS: Record<DataPhase["kind"], string> = {
+  ready: "就緒",
+  building: "建立中",
+  failed: "更新失敗",
+  capped: "已達今日上限",
+};
+
+export default function AnalystUpdatePanel({
+  consensus, onUpdated,
+}: {
+  /** 共識清單（頁面已讀好的同一份）：資料來源、母體、已建立與入選檔數。 */
+  consensus: OpportunityConsensusResponse;
+  onUpdated: () => void;
+}) {
   const [status, setStatus] = useState<StatusLoad>({ state: "loading" });
   const [run, setRun] = useState<Run>({ state: "idle" });
   const [retrying, setRetrying] = useState<string | null>(null);
@@ -85,6 +114,13 @@ export default function AnalystUpdatePanel({ onUpdated }: { onUpdated: () => voi
   const failed = data ? data.symbols.filter(isFailed) : [];
   const now = useNow(failed.some((s) => s.state === "cooling"));
   const busy = run.state === "running" || retrying !== null;
+  const phase = dataPhase(consensus, data);
+  const retryCtx: RetryContext = { capReached: capReached(data), today: data?.today };
+  const built = builtCount(consensus);
+  const total = consensus.universe.symbols;
+  const selected = consensus.items.filter((i) => i.gate.selected).length;
+  const updateLabel = phase.kind !== "building" ? "更新分析師資料"
+    : built === 0 ? "開始建立" : "繼續更新";
 
   async function update() {
     setRun({ state: "running", progress: null });
@@ -128,30 +164,43 @@ export default function AnalystUpdatePanel({ onUpdated }: { onUpdated: () => voi
 
   return (
     <section className="card" aria-label="分析師資料">
-      <h2 className="section-title">分析師資料</h2>
+      <h2 className="section-title">
+        分析師資料
+        <span className={`tag ${phase.kind === "ready" ? "up" : "warn"}`}>
+          {PHASE_LABELS[phase.kind]}
+        </span>
+      </h2>
+      <ul className="opp-detail-facts opp-status-facts" aria-label="資料狀態">
+        <StatusFact label="資料來源">
+          {consensus.source.is_fixture ? "測試資料（非真實市場資料）" : "真實分析師資料"}
+        </StatusFact>
+        <StatusFact label="資料日">{consensus.universe.as_of ?? data?.data_as_of ?? "—"}</StatusFact>
+        <StatusFact label="已建立">{built}／{total} 檔</StatusFact>
+        <StatusFact label="入選">{selected} 檔</StatusFact>
+        {data && <StatusFact label="今日更新">{progressText(data.progress)}</StatusFact>}
+        {data && (
+          <StatusFact label="今日上游呼叫">
+            {data.upstream_calls_today}／{data.daily_cap} 次
+          </StatusFact>
+        )}
+      </ul>
       {status.state === "loading" && <p className="caption">載入中……</p>}
       {status.state === "error" && (
         <div className="notice error" role="alert">
           {status.message}
         </div>
       )}
-      {data && (
-        <p className="opp-facts">
-          <span>資料日 {data.data_as_of ?? "—"}</span>
-          <span>今日 {progressText(data.progress)}</span>
-          <span>
-            今日上游呼叫 {data.upstream_calls_today}／{data.daily_cap} 次
-          </span>
-        </p>
-      )}
+      <p className={`notice opp-phase${phase.kind === "ready" ? "" : " warn"}`} role="status">
+        {phaseText(phase, { built, total, selected, today: data?.today })}
+      </p>
       <div className="opp-actions">
         <button
           type="button"
-          className="pbtn"
+          className={phase.kind === "ready" ? "pbtn line" : "pbtn"}
           onClick={() => void update()}
-          disabled={busy || data === null}
+          disabled={busy || data === null || phase.kind === "capped"}
         >
-          {run.state === "running" ? "更新中……" : "更新分析師資料"}
+          {run.state === "running" ? "更新中……" : updateLabel}
         </button>
       </div>
       <p className="caption">
@@ -167,6 +216,7 @@ export default function AnalystUpdatePanel({ onUpdated }: { onUpdated: () => voi
               now={now}
               busy={busy}
               retrying={retrying === s.symbol}
+              ctx={retryCtx}
               error={retryErrors[s.symbol]}
               onRetry={() => void retry(s.symbol)}
             />
@@ -175,6 +225,37 @@ export default function AnalystUpdatePanel({ onUpdated }: { onUpdated: () => voi
       )}
     </section>
   );
+}
+
+function StatusFact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <li aria-label={label}>
+      <span className="opp-detail-label">{label}</span>
+      <strong className="num">{children}</strong>
+    </li>
+  );
+}
+
+/** 每個狀態一句話：現在怎樣、下一步做什麼。 */
+function phaseText(
+  phase: DataPhase,
+  { built, total, selected, today }:
+    { built: number; total: number; selected: number; today: string | undefined },
+): string {
+  switch (phase.kind) {
+    case "ready":
+      return selected > 0
+        ? "資料已就緒，可以直接用下方的「搜尋選擇權」搜尋入選股。"
+        : "資料已就緒，但目前沒有股票同時通過兩道門檻，可以調整門檻後再看。";
+    case "building":
+      return built === 0
+        ? `資料建立中：母體 ${total} 檔都還沒建立。按「開始建立」抓取分析師資料，建好後才有入選清單。`
+        : `資料建立中：已建立 ${built}／${total} 檔。按「繼續更新」接著建立；已建立的入選股現在就可以搜尋。`;
+    case "failed":
+      return `${phase.failed} 檔更新失敗：原因與重試方式列在下方。其餘股票照常可以搜尋。`;
+    case "capped":
+      return `今日上游呼叫已達每日上限（${phase.calls}／${phase.cap} 次），今天不能再更新或重試，${nextAutoUpdate(today)}。已建立的資料照常可以搜尋。`;
+  }
 }
 
 function RunLine({ run }: { run: Run }) {
@@ -210,16 +291,17 @@ function RunLine({ run }: { run: Run }) {
 }
 
 function FailedItem({
-  item, now, busy, retrying, error, onRetry,
+  item, now, busy, retrying, ctx, error, onRetry,
 }: {
   item: ConsensusRefreshSymbol;
   now: number;
   busy: boolean;
   retrying: boolean;
+  ctx: RetryContext;
   error: string | undefined;
   onRetry: () => void;
 }) {
-  const gate = retryGate(item, now);
+  const gate = retryGate(item, now, ctx);
   return (
     <li aria-label={item.symbol} className="opp-item">
       <div className="opp-item-head">

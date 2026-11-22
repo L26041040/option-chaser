@@ -4744,6 +4744,32 @@ body {
   max-width: 280px;
 }
 
+/* LIVE-T5（#401）：分析師資料區塊頂端的資料狀態（沿用明細的 label／值格線）
+   與狀態句；結果列的兩個動作鈕與橫跨整張表的共識明細列。 */
+.opp-status-facts {
+  margin: 4px 0 10px;
+}
+
+.opp-phase {
+  margin: 0 0 10px;
+}
+
+.opp-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.opp-table tr.opp-detail-row td {
+  white-space: normal;
+  height: auto;
+  min-width: 0;
+}
+
+.opp-table tr.opp-detail-row .opp-detail-panel {
+  margin-top: 0;
+}
+
 @media (min-width: 1100px) {
   .opp-table td {
     height: auto;
@@ -4802,6 +4828,15 @@ body {
   }
 
   .opp-table td.opp-save {
+    grid-column: 1 / -1;
+  }
+
+  .opp-table tr.opp-detail-row {
+    display: block;
+    padding-top: 0;
+  }
+
+  .opp-table tr.opp-detail-row td {
     grid-column: 1 / -1;
   }
 }

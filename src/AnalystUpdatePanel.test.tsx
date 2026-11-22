@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import consensusSample from "../contracts/opportunity_consensus_sample.json";
 import statusSample from "../contracts/opportunity_consensus_status_sample.json";
 import updateSample from "../contracts/opportunity_consensus_update_sample.json";
+import searchSample from "../contracts/opportunity_search_sample.json";
 import OpportunityPage from "./OpportunityPage";
 import type {
   ConsensusRefreshStatusResponse,
@@ -32,14 +33,16 @@ function res(status: number, body: unknown): Response {
            json: async () => body } as Response;
 }
 
-/** `update`／`status` 依序回下一個（最後一個重複）。 */
+/** `update`／`status`／`consensus` 依序回下一個（最後一個重複）。 */
 function mockApi({
   role = "superuser" as Role,
   status = [{ status: 200, body: STATUS }] as Reply[],
   update = [{ status: 200, body: { ...UPDATE, remaining: [] } }] as Reply[],
+  consensus = [CONSENSUS] as OpportunityConsensusResponse[],
 } = {}) {
   let u = 0;
   let s = 0;
+  let c = 0;
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
     const path = String(url);
     if (path.startsWith("/api/auth/status")) return res(200, { role });
@@ -51,7 +54,12 @@ function mockApi({
       const r = update[Math.min(u++, update.length - 1)];
       return res(r.status, r.body);
     }
-    if (path.startsWith("/api/opportunity/consensus")) return res(200, CONSENSUS);
+    if (path.startsWith("/api/opportunity/consensus")) {
+      return res(200, consensus[Math.min(c++, consensus.length - 1)]);
+    }
+    if (path.startsWith("/api/opportunity/search")) {
+      return res(200, { ...searchSample, remaining: [] });
+    }
     return res(404, { detail: "not mocked" });
   });
   vi.stubGlobal("fetch", spy);
@@ -70,7 +78,7 @@ async function renderPanel(opts: Parameters<typeof mockApi>[0] = {}) {
   const spy = mockApi(opts);
   render(<OpportunityPage onSaveAsScenario={vi.fn(noSave)} />);
   const panel = await screen.findByRole("region", { name: "分析師資料" });
-  await within(panel).findByText(/資料日/);
+  await within(panel).findByRole("listitem", { name: "今日更新" });
   return { spy, panel };
 }
 
@@ -103,9 +111,12 @@ describe("分析師資料：權限", () => {
 
   it.each(["superuser", "superadmin"] as const)("%s 看得到狀態與更新按鈕", async (role) => {
     const { panel } = await renderPanel({ role });
-    expect(within(panel).getByText("資料日 2026-09-28")).toBeInTheDocument();
-    expect(within(panel).getByText("今日 已完成 24／57 檔、失敗 1 檔")).toBeInTheDocument();
-    expect(within(panel).getByText("今日上游呼叫 25／400 次")).toBeInTheDocument();
+    const facts = within(panel).getByRole("list", { name: "資料狀態" });
+    expect(within(facts).getByRole("listitem", { name: "資料日" })).toHaveTextContent("2026-09-28");
+    expect(within(facts).getByRole("listitem", { name: "今日更新" }))
+      .toHaveTextContent("已完成 24／57 檔、失敗 1 檔");
+    expect(within(facts).getByRole("listitem", { name: "今日上游呼叫" }))
+      .toHaveTextContent("25／400 次");
     expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeEnabled();
   });
 });
@@ -130,7 +141,7 @@ describe("分析師資料：更新（自動續跑）", () => {
     });
     render(<OpportunityPage onSaveAsScenario={vi.fn(noSave)} />);
     const panel = await screen.findByRole("region", { name: "分析師資料" });
-    await within(panel).findByText(/資料日/);
+    await within(panel).findByRole("listitem", { name: "今日更新" });
     const consensusBefore = callsTo(spy, "/api/opportunity/consensus").length;
 
     await userEvent.click(within(panel).getByRole("button", { name: "更新分析師資料" }));
@@ -210,13 +221,174 @@ describe("分析師資料：重試", () => {
       .toHaveTextContent("今日分析師資料的上游呼叫已達每日上限");
   });
 
-  it("重試用完：停用並說明下一個交易日再試", async () => {
+  it("重試用完：停用並說明明天自動更新", async () => {
     const { panel } = await renderPanel({ status: [{ status: 200, body: withSymbol("GGG", {
       state: "exhausted", retries_today: 3,
       next_retry_at: "2026-09-29T04:00:00+00:00" }) }] });
     const item = within(panel).getByRole("listitem", { name: "GGG" });
     expect(within(item).getByRole("button", { name: "重試 GGG" })).toBeDisabled();
     expect(item).toHaveTextContent("今日已重試 3 次");
-    expect(item).toHaveTextContent("今天的重試次數已用完，下一個交易日自動再試");
+    expect(item).toHaveTextContent("今天的重試次數已用完，明天自動更新");   // 美東 9/28 是週一
+  });
+});
+
+// ---------- LIVE-T5（#401）：資料狀態與三種狀態的畫面與按鈕 ----------
+
+/** 今天全部更新成功、沒有失敗的狀態。 */
+const ALL_DONE: ConsensusRefreshStatusResponse = {
+  ...STATUS, upstream_calls_today: 57,
+  progress: { total: 57, done: 57, failed: 0, pending: 0, in_progress: 0 },
+  symbols: STATUS.symbols.map((x) => ({ ...x, state: "done", error: null, next_retry_at: null,
+                                        retryable_now: false, as_of: "2026-09-28" })),
+};
+const REAL: OpportunityConsensusResponse = {
+  ...CONSENSUS, source: { configured: true, name: "yahoo-udh", is_fixture: false },
+};
+/** 母體 7 檔中 `symbols` 這幾檔還沒建立（後端 `not_built` 的同一判準）。 */
+function building(base: OpportunityConsensusResponse, symbols: string[]): OpportunityConsensusResponse {
+  const items = base.items.map((i) => symbols.includes(i.symbol)
+    ? { ...i, status: "no_data" as const, mean: null, dispersion: null, percentile: null,
+        n_analysts: 0, history_points: 0, as_of: null, reasons: ["no_data: 尚未更新"],
+        gate: { first: false, second: false, selected: false, reasons: [] } }
+    : i);
+  return { ...base, items, universe: { ...base.universe, not_built: symbols.length } };
+}
+const phaseTag = (panel: HTMLElement) =>
+  within(panel).getByRole("heading", { name: /^分析師資料/ });
+const fact = (panel: HTMLElement, name: string) =>
+  within(within(panel).getByRole("list", { name: "資料狀態" })).getByRole("listitem", { name });
+
+describe("資料狀態（LIVE-T5／#401）", () => {
+  it("就緒：顯示真實來源、資料日、已建立／母體、入選檔數；直接「搜尋選擇權」會真的搜尋", async () => {
+    const { spy, panel } = await renderPanel({ consensus: [REAL],
+                                               status: [{ status: 200, body: ALL_DONE }] });
+    expect(phaseTag(panel)).toHaveTextContent("就緒");
+    expect(fact(panel, "資料來源")).toHaveTextContent("真實分析師資料");
+    expect(fact(panel, "資料日")).toHaveTextContent("2026-09-28");
+    expect(fact(panel, "已建立")).toHaveTextContent("6／7 檔");   // GGG 抓取失敗不算
+    expect(fact(panel, "入選")).toHaveTextContent("2 檔");
+    expect(within(panel).getByRole("status"))
+      .toHaveTextContent("資料已就緒，可以直接用下方的「搜尋選擇權」搜尋入選股。");
+    expect(screen.queryByText("測試資料，非真實市場資料")).not.toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeEnabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "搜尋選擇權" }));
+    expect(await screen.findByRole("region", { name: "搜尋結果" })).toBeInTheDocument();
+    expect(callsTo(spy, "/api/opportunity/search")).toHaveLength(1);
+  });
+
+  it("測試資料：資料來源寫明測試資料，頁首常駐標示", async () => {
+    const { panel } = await renderPanel({ status: [{ status: 200, body: ALL_DONE }] });
+    expect(fact(panel, "資料來源")).toHaveTextContent("測試資料（非真實市場資料）");
+    expect(screen.getByRole("banner", { name: "機會搜尋頁首" }))
+      .toHaveTextContent("測試資料，非真實市場資料");
+  });
+
+  it("建立中（一檔都沒建）：「開始建立」真的送出更新，建好後變成就緒、可以搜尋", async () => {
+    const empty = building(REAL, REAL.items.map((i) => i.symbol));
+    const { spy, panel } = await renderPanel({
+      consensus: [empty, REAL],
+      status: [{ status: 200, body: { ...STATUS, symbols: [], progress:
+        { total: 7, done: 0, failed: 0, pending: 7, in_progress: 0 }, upstream_calls_today: 0 } },
+               { status: 200, body: ALL_DONE }] });
+    expect(phaseTag(panel)).toHaveTextContent("建立中");
+    expect(fact(panel, "已建立")).toHaveTextContent("0／7 檔");
+    expect(within(panel).getByRole("status")).toHaveTextContent("母體 7 檔都還沒建立");
+    expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeDisabled();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "開始建立" }));
+    await waitFor(() => expect(phaseTag(panel)).toHaveTextContent("就緒"));
+    expect(updateBodies(spy)).toEqual([{}]);
+    expect(fact(panel, "已建立")).toHaveTextContent("6／7 檔");
+    expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
+  });
+
+  it("建立中（部分建立）：顯示進度與「繼續更新」，依 remaining 續跑並即時顯示進度", async () => {
+    const partial = building(REAL, ["BBB", "CCC"]);
+    let finish!: (r: Reply) => void;
+    const second = new Promise<Reply>((resolve) => { finish = resolve; });
+    const spy = mockApi({ consensus: [partial, REAL] });
+    const replies: (Reply | Promise<Reply>)[] = [
+      { status: 200, body: { ...UPDATE, remaining: ["CCC"],
+                             progress: { total: 7, done: 5, failed: 1, pending: 1, in_progress: 0 } } },
+      second];
+    let n = 0;
+    const base = spy.getMockImplementation()!;
+    spy.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (String(url).startsWith("/api/opportunity/consensus/update")) {
+        const r = await replies[Math.min(n++, replies.length - 1)];
+        return res(r.status, r.body);
+      }
+      return base(url, init);
+    });
+    render(<OpportunityPage onSaveAsScenario={vi.fn(noSave)} />);
+    const panel = await screen.findByRole("region", { name: "分析師資料" });
+    await within(panel).findByRole("listitem", { name: "今日更新" });
+    expect(phaseTag(panel)).toHaveTextContent("建立中");
+    expect(fact(panel, "已建立")).toHaveTextContent("4／7 檔");
+    expect(within(panel).getByRole("status")).toHaveTextContent(
+      "資料建立中：已建立 4／7 檔。按「繼續更新」接著建立；已建立的入選股現在就可以搜尋。");
+    // 已建立的入選股（AAA、EEE）照常可以搜尋。
+    expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "繼續更新" }));
+    expect(await within(panel).findByText("已完成 5／7 檔、失敗 1 檔")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "更新中……" })).toBeDisabled();
+    finish({ status: 200, body: { ...UPDATE, remaining: [],
+                                  progress: { total: 7, done: 6, failed: 1, pending: 0, in_progress: 0 } } });
+    expect(await within(panel).findByText("更新完成：已完成 6／7 檔、失敗 1 檔")).toBeInTheDocument();
+    expect(updateBodies(spy)).toEqual([{}, {}]);
+  });
+
+  it("失敗（冷卻中）：狀態說幾檔失敗，重試停用並顯示剩餘時間；更新鈕仍可按", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-09-28T13:00:00Z"));
+    const { panel } = await renderPanel({ consensus: [REAL] });
+    expect(phaseTag(panel)).toHaveTextContent("更新失敗");
+    expect(within(panel).getByRole("status"))
+      .toHaveTextContent("1 檔更新失敗：原因與重試方式列在下方。其餘股票照常可以搜尋。");
+    const item = within(panel).getByRole("listitem", { name: "GGG" });
+    expect(item).toHaveTextContent("逾時（測試資料模擬上游失敗）");
+    expect(within(item).getByRole("button", { name: "重試 GGG" })).toBeDisabled();
+    expect(item).toHaveTextContent("還要約 8 分 20 秒才能重試");
+    expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
+  });
+
+  it("已達今日上限：更新與重試都停用，說明明天自動更新，不送任何更新請求", async () => {
+    const capped = withSymbol("GGG", { state: "retry_ready", next_retry_at: null,
+                                       retryable_now: true });
+    const { spy, panel } = await renderPanel({ consensus: [REAL], status: [{ status: 200,
+      body: { ...capped, upstream_calls_today: 400 } }] });
+    expect(phaseTag(panel)).toHaveTextContent("已達今日上限");
+    expect(within(panel).getByRole("status")).toHaveTextContent(
+      "今日上游呼叫已達每日上限（400／400 次），今天不能再更新或重試，明天自動更新。");
+    expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeDisabled();
+    const item = within(panel).getByRole("listitem", { name: "GGG" });
+    expect(within(item).getByRole("button", { name: "重試 GGG" })).toBeDisabled();
+    expect(item).toHaveTextContent("今日上游呼叫已達每日上限，明天自動更新");
+    expect(updateBodies(spy)).toEqual([]);
+    // 已建立的資料照常可以搜尋。
+    expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
+  });
+
+  it("已達今日上限且當天是美東週五：說下週一自動更新", async () => {
+    const { panel } = await renderPanel({ consensus: [REAL], status: [{ status: 200,
+      body: { ...STATUS, today: "2026-09-25", upstream_calls_today: 400 } }] });
+    expect(within(panel).getByRole("status")).toHaveTextContent("下週一自動更新");
+  });
+
+  it("緊急關閉：說明來源已關閉，沒有任何更新、重試或搜尋按鈕，也不打狀態端點", async () => {
+    const off: OpportunityConsensusResponse = {
+      ...CONSENSUS, source: { configured: false, name: null, is_fixture: false }, items: [],
+      universe: { ...CONSENSUS.universe, with_data: 0, insufficient: 0, not_built: 0, as_of: null },
+      message: "尚未設定分析師資料來源" };
+    const spy = mockApi({ consensus: [off] });
+    render(<OpportunityPage onSaveAsScenario={vi.fn(noSave)} />);
+    expect(await screen.findByRole("heading", { name: "分析師資料來源已關閉" })).toBeInTheDocument();
+    expect(screen.getByText(/緊急關閉開關生效中/)).toBeInTheDocument();
+    expect(screen.queryByText(/尚未設定/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(callsTo(spy, "/api/opportunity/consensus/status")).toEqual([]);
   });
 });

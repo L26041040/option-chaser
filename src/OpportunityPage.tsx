@@ -12,7 +12,9 @@
  *   角色未確認前只顯示載入中、不打任何機會搜尋端點；不是 SU/SA 一律
  *   `replace` 回首頁（比照 `AdminPage`）。後端 403 是第二道防線，萬一
  *   走到也照實顯示後端訊息。
- * - 來源未設定（`source.configured=false`）就沒有搜尋按鈕——不假裝能搜。
+ * - 來源關閉（`source.configured=false`）就沒有任何按鈕——不假裝能搜。部署環境
+ *   預設啟用真實來源（#397），會走到這裡只有緊急關閉開關生效時，所以文案說
+ *   「已關閉」，不說「尚未設定」（LIVE-T5／#401）。
  *   測試資料來源（`is_fixture`）在頁首常駐標示，不隨捲動或狀態消失。
  * - 「停止」是真的不再續跑：已經送出的那一次照樣等它回來並顯示（上游
  *   額度已經花了），之後不再送下一次；剩下的檔留著，可以「繼續搜尋」。
@@ -31,6 +33,9 @@
  * - 共識資料還沒建立（`universe.not_built`，LIVE-T4／#400）：一檔都還沒建立
  *   時入選股區塊只說「資料建立中」、搜尋停用——不顯示「沒有入選股」的空
  *   結果；部分建立時照常列出並說明還有幾檔在建立中。
+ * - 資料狀態（來源、資料日、已建立／母體、入選）與就緒／建立中／失敗的下一步
+ *   都在「分析師資料」區塊（LIVE-T5／#401）；結果表每一列都能打開那一檔的
+ *   共識明細（`ResultRow`），與存成劇本並排。
  * - 搜尋失敗與「部分家族沒有結果」（`incomplete`）的訊息由後端組好（引擎
  *   自己對每個策略的原因、基準到期日），這裡照實顯示。
  */
@@ -55,7 +60,11 @@ import {
 import { strategyLabel } from "./detail";
 import { FAMILY_LABELS } from "./family";
 import { setAuthStatusCache, subscribeAuthStatus } from "./fetchCache";
-import ConsensusDetailToggle from "./ConsensusDetail";
+import ConsensusDetailToggle, {
+  ConsensusDetailPanel,
+  useConsensusDetail,
+} from "./ConsensusDetail";
+import { isNotBuilt } from "./consensusUpdate";
 import {
   mergeSearchRows,
   opportunityRowKey as rowKey,
@@ -312,15 +321,16 @@ export default function OpportunityPage({
 
       {data && !data.source.configured && (
         <section className="card" aria-label="資料來源">
-          <h2 className="section-title">尚未設定分析師資料來源</h2>
+          <h2 className="section-title">分析師資料來源已關閉</h2>
           <p className="caption">
-            要有提供個別分析師目標價的資料來源，才能算出共識並搜尋選擇權。設定好之前這裡不會有任何清單或搜尋結果。
+            緊急關閉開關生效中：暫停抓取分析師資料，也不能搜尋選擇權。重新開啟後，這裡會恢復資料狀態與搜尋。
           </p>
         </section>
       )}
 
       {data && data.source.configured && (
-        <AnalystUpdatePanel onUpdated={() => setConsensusVersion((v) => v + 1)} />
+        <AnalystUpdatePanel consensus={data}
+                            onUpdated={() => setConsensusVersion((v) => v + 1)} />
       )}
 
       {data && data.source.configured && (
@@ -390,7 +400,7 @@ function ConfiguredBody({
         </h2>
         {nothingBuilt ? (
           <p className="notice" role="status">
-            資料建立中：{notBuilt} 檔的分析師資料還沒建立，建立完成後才會有入選清單。請用上方的「更新分析師資料」建立。
+            資料建立中：{notBuilt} 檔的分析師資料還沒建立，建立完成後才會有入選清單。請用上方「分析師資料」的「開始建立」。
           </p>
         ) : selected.length === 0 ? (
           <p className="caption">目前沒有同時通過兩道門檻的股票。</p>
@@ -531,49 +541,15 @@ function ConfiguredBody({
             <tbody>
               {ranked.map((row) => {
                 const key = rowKey(row);
-                const err = saveErrors[key];
                 return (
-                  <tr
+                  <ResultRow
                     key={key}
-                    aria-label={`${row.symbol} ${strategyLabel(row.subtype)}`}
-                    data-family={row.family}
-                  >
-                    <td data-label="標的" className="opp-symbol">{row.symbol}</td>
-                    <td data-label="策略">{strategyLabel(row.subtype)}</td>
-                    <td data-label="履約價">
-                      {formatLegs(row.legs)}
-                    </td>
-                    <td data-label="到期日">
-                      {row.expiry}
-                      <span className="row-note">{expiryDistance(row.buffer_days)}</span>
-                    </td>
-                    <td data-label="目標月份">{row.target_month}</td>
-                    <td data-label="淨成本 / 股" className="r num">{money(row.entry_cost)}</td>
-                    <td data-label="最大損失 / 股" className="r num">
-                      {money(row.max_loss_per_contract / 100)}
-                    </td>
-                    <td data-label="目標價情境報酬" className="r num opp-return">
-                      {formatReturn(row.target_return)}
-                    </td>
-                    <td data-label="損益兩平" className="r num">
-                      {row.breakeven === null ? "—" : money(row.breakeven)}
-                    </td>
-                    <td className="opp-save">
-                      <button
-                        type="button"
-                        className="pbtn sm line"
-                        onClick={() => onSave(row)}
-                        disabled={savingKey !== null}
-                      >
-                        {savingKey === key ? "儲存中……" : "存成劇本"}
-                      </button>
-                      {err && (
-                        <div className="notice error" role="alert">
-                          {err}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
+                    row={row}
+                    saving={savingKey === key}
+                    saveDisabled={savingKey !== null}
+                    error={saveErrors[key]}
+                    onSave={() => onSave(row)}
+                  />
                 );
               })}
             </tbody>
@@ -604,11 +580,83 @@ function ConfiguredBody({
   );
 }
 
-/** 還沒建立共識資料：沒有快取、也還沒失敗過（後端固定原因字串，與
- *  `universe.not_built` 同一個判準）。 */
-const NOT_BUILT_REASON = "no_data: 尚未更新";
-function isNotBuilt(item: ConsensusItem): boolean {
-  return item.reasons.length === 1 && item.reasons[0] === NOT_BUILT_REASON;
+const RESULT_COLUMNS = 10;
+
+/**
+ * 結果表的一列＋（打開時）它下面的一列共識明細（LIVE-T5／#401）：每一列都能
+ * 看到那一檔的共識是怎麼來的，再決定要不要存成劇本。明細列橫跨整張表；
+ * 手機版的卡片排版裡同樣是整寬，不出現水平捲動。
+ */
+function ResultRow({
+  row, saving, saveDisabled, error, onSave,
+}: {
+  row: OpportunityRow;
+  saving: boolean;
+  saveDisabled: boolean;
+  error: string | undefined;
+  onSave: () => void;
+}) {
+  const detail = useConsensusDetail(row.symbol);
+  return (
+    <>
+      <tr aria-label={`${row.symbol} ${strategyLabel(row.subtype)}`} data-family={row.family}>
+        <td data-label="標的" className="opp-symbol">{row.symbol}</td>
+        <td data-label="策略">{strategyLabel(row.subtype)}</td>
+        <td data-label="履約價">
+          {formatLegs(row.legs)}
+        </td>
+        <td data-label="到期日">
+          {row.expiry}
+          <span className="row-note">{expiryDistance(row.buffer_days)}</span>
+        </td>
+        <td data-label="目標月份">{row.target_month}</td>
+        <td data-label="淨成本 / 股" className="r num">{money(row.entry_cost)}</td>
+        <td data-label="最大損失 / 股" className="r num">
+          {money(row.max_loss_per_contract / 100)}
+        </td>
+        <td data-label="目標價情境報酬" className="r num opp-return">
+          {formatReturn(row.target_return)}
+        </td>
+        <td data-label="損益兩平" className="r num">
+          {row.breakeven === null ? "—" : money(row.breakeven)}
+        </td>
+        <td className="opp-save">
+          <div className="opp-row-actions">
+            <button
+              type="button"
+              className="pbtn sm line"
+              aria-label={`${row.symbol} 共識詳細資料`}
+              aria-expanded={detail.open}
+              aria-controls={detail.panelId}
+              onClick={detail.toggle}
+            >
+              {detail.open ? "收起共識" : "共識詳細"}
+            </button>
+            <button
+              type="button"
+              className="pbtn sm line"
+              onClick={onSave}
+              disabled={saveDisabled}
+            >
+              {saving ? "儲存中……" : "存成劇本"}
+            </button>
+          </div>
+          {error && (
+            <div className="notice error" role="alert">
+              {error}
+            </div>
+          )}
+        </td>
+      </tr>
+      {detail.open && (
+        <tr className="opp-detail-row" data-detail-for={row.symbol}>
+          <td colSpan={RESULT_COLUMNS}>
+            <ConsensusDetailPanel symbol={row.symbol} detail={detail} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 function weakReasons(

@@ -105,6 +105,17 @@ describe("渲染", () => {
     expect(container.textContent).not.toMatch(/S&P|500/);
   });
 
+  it("只有門檻、母體、策略、排序：沒有任何 Yahoo／API／金鑰設定（LIVE-T5／#401）", async () => {
+    const { container } = render(
+      <OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    await userEvent.click(block().getByRole("radio", { name: "自訂清單" }));
+    expect(container.textContent).not.toMatch(/Yahoo|API|金鑰|token|資料來源/i);
+    // 輸入框只有兩道門檻與自訂 ticker 清單；沒有密碼／金鑰欄位。
+    expect(container.querySelectorAll('input[type="password"]')).toHaveLength(0);
+    expect(block().getAllByRole("spinbutton")).toHaveLength(2);
+    expect(block().getAllByRole("textbox")).toHaveLength(1);
+  });
+
   it("選自訂才出現 ticker 清單輸入框", async () => {
     render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
     const b = block();

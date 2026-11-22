@@ -4,8 +4,10 @@
 // FastAPI app，分析師資料是真實 Yahoo、選擇權報價走既有預設路徑（Cboe → yfinance）、
 // 資料庫是每次重建的本機 Postgres `oclivebrowser`。真 Chromium（手機 viewport）走完：
 // SU 登入 → 設定頁存門檻與自訂清單 → 機會搜尋頁先顯示「資料建立中」且不能搜 →
-// 按「更新分析師資料」（真實 Yahoo）→ 入選清單出現 → 搜尋選擇權（真實 chain）→
-// 報酬最高的一列「存成劇本」→ 詳細頁頭條與該列一致（逐欄）。
+// 資料狀態（LIVE-T5／#401）：真實來源、建立中、已建立 0／N →
+// 按「開始建立」（真實 Yahoo）→ 已建立 N／N、入選清單出現 → 搜尋選擇權（真實 chain）→
+// 報酬最高的一列打開共識詳細資料（平均目標價＝劇本目標價）→「存成劇本」→
+// 詳細頁頭條與該列一致（逐欄）。每個畫面都檢查手機寬度沒有水平捲動。
 //
 //   npm run build
 //   PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium \
@@ -96,6 +98,8 @@ async function api(page, method, path, { body } = {}) {
   }, [method, path, body]);
 }
 const stats = async (page) => (await api(page, "GET", "/__verify/stats")).body;
+const noHorizontalScroll = (page) => page.evaluate(
+  () => document.documentElement.scrollWidth <= window.innerWidth);
 const money = (x) => `$${x.toFixed(2)}`;
 const pct = (x) => `${(x * 100).toFixed(1)}%`;
 
@@ -162,11 +166,21 @@ async function flow(browser) {
         && !/目前沒有同時通過兩道門檻的股票/.test(await selectedRegion.innerText()));
   check("共識還沒建立：搜尋按鈕停用",
         await selectedRegion.getByRole("button", { name: "搜尋選擇權" }).isDisabled());
+  const panel = page.getByRole("region", { name: "分析師資料" });
+  const facts = panel.getByRole("list", { name: "資料狀態" });
+  const fact = (name) => facts.getByRole("listitem", { name }).innerText();
+  await facts.getByRole("listitem", { name: "今日更新" }).waitFor({ timeout: 20000 });
+  check("資料狀態（#401）：建立中、真實分析師資料、已建立 0／N、入選 0",
+        /建立中/.test(await panel.getByRole("heading", { name: /^分析師資料/ }).innerText())
+        && /真實分析師資料/.test(await fact("資料來源"))
+        && (await fact("已建立")).includes(`0／${SYMBOLS.length} 檔`)
+        && (await fact("入選")).includes("0 檔"),
+        { 資料來源: await fact("資料來源"), 已建立: await fact("已建立") });
+  check("資料狀態（手機）：無水平捲動", await noHorizontalScroll(page));
 
-  // 更新分析師資料（真實 Yahoo，#398 的更新路徑；母體＝樣本 ∪ 自訂清單）。
+  // 開始建立（真實 Yahoo，#398 的更新路徑；母體＝樣本 ∪ 自訂清單）。
   const t0 = Date.now();
-  await page.getByRole("region", { name: "分析師資料" })
-    .getByRole("button", { name: "更新分析師資料" }).click();
+  await panel.getByRole("button", { name: "開始建立" }).click();
   await page.getByText(/更新完成/).waitFor({ timeout: 300000 });
   const afterUpdate = await stats(page);
   check("更新分析師資料：真的呼叫了 Yahoo（真實來源）",
@@ -183,6 +197,13 @@ async function flow(browser) {
         && consensus.source.name === "yahoo-udh" && consensus.source.is_fixture === false,
         selected.map((i) => i.symbol));
   check("頁面沒有「測試資料」標示", (await page.getByText("測試資料，非真實市場資料").count()) === 0);
+  await page.waitForFunction((n) => (document.querySelector('[aria-label="已建立"]')?.textContent ?? "")
+    .includes(`${n}／${n} 檔`), SYMBOLS.length, { timeout: 30000 });
+  const phase = await panel.getByRole("heading", { name: /^分析師資料/ }).innerText();
+  check("資料狀態（#401）：建好後不再是建立中，已建立 N／N、入選檔數＝共識清單、資料日＝共識資料日",
+        !/建立中/.test(phase) && (await fact("入選")).includes(`${selected.length} 檔`)
+        && (await fact("資料日")).includes(consensus.universe.as_of),
+        { phase, 入選: await fact("入選"), 資料日: await fact("資料日") });
 
   // 搜尋選擇權（真實 chain，逐檔續跑）。
   const responses = [];
@@ -212,6 +233,19 @@ async function flow(browser) {
     target_month: top.target_month }));
   const topRow = results.locator(`tbody tr[data-family="${top.family}"]`)
     .filter({ has: page.locator("td.opp-symbol", { hasText: top.symbol }) });
+  check("結果表（手機）：無水平捲動", await noHorizontalScroll(page));
+
+  // 共識詳細資料（#401：每一列都能打開）。
+  await topRow.getByRole("button", { name: `${top.symbol} 共識詳細資料` }).click();
+  const detailPanel = results.getByRole("region", { name: `${top.symbol} 共識明細` });
+  const numbers = detailPanel.getByRole("list", { name: "共識數值" });
+  await numbers.waitFor({ timeout: 30000 });
+  const numbersText = await numbers.innerText();
+  check("結果列的共識詳細資料：平均目標價＝劇本目標價，有每月序列",
+        numbersText.replace(/\s+/g, "").includes(`平均目標價${money(top.scenario.target_price)}`)
+        && (await detailPanel.getByRole("list", { name: "每月分歧度" }).getByRole("listitem").count()) > 0,
+        { numbers: numbersText.replace(/\s+/g, " ") });
+  check("共識詳細資料（手機）：無水平捲動", await noHorizontalScroll(page));
   const before = Number(sql("SELECT count(*) FROM scenarios"));
   await topRow.getByRole("button", { name: "存成劇本" }).click();
   await page.waitForURL(/#\/s\/[^/]+$/, { timeout: 120000 });

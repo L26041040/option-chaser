@@ -134,9 +134,10 @@ describe("OpportunityPage：權限", () => {
 });
 
 describe("OpportunityPage：資料來源狀態與共識清單", () => {
-  it("來源未設定：顯示「尚未設定分析師資料來源」，沒有搜尋按鈕", async () => {
+  it("來源關閉（緊急關閉開關）：說明已關閉、不說「尚未設定」，沒有搜尋按鈕", async () => {
     const { spy } = await renderReady({ consensus: { status: 200, body: NOT_CONFIGURED } });
-    expect(await screen.findByText("尚未設定分析師資料來源")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "分析師資料來源已關閉" })).toBeInTheDocument();
+    expect(screen.queryByText(/尚未設定/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "搜尋選擇權" })).not.toBeInTheDocument();
     expect(screen.queryByText("測試資料，非真實市場資料")).not.toBeInTheDocument();
     expect(callsTo(spy, "/api/opportunity/search")).toEqual([]);
@@ -261,6 +262,34 @@ describe("OpportunityPage：個股詳細資料（LIVE-T2／#399）", () => {
     expect(await within(panel).findByRole("list", { name: "每月分歧度" })).toBeInTheDocument();
     expect(callsTo(spy, "/api/opportunity/consensus-detail/").map(([u]) => String(u)))
       .toEqual(["/api/opportunity/consensus-detail/DDD"]);
+  });
+});
+
+describe("OpportunityPage：結果列的共識詳細資料（LIVE-T5／#401）", () => {
+  it("每一列都能打開該股的共識明細（整列寬、按下才讀），再按收起；存成劇本仍在同一列", async () => {
+    const user = userEvent.setup();
+    const { spy } = await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
+    await user.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    const rows = await within(results).findAllByRole("row", { name: /^AAA / });
+    for (const row of rows) {
+      expect(within(row).getByRole("button", { name: "AAA 共識詳細資料" })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "存成劇本" })).toBeInTheDocument();
+    }
+    const before = callsTo(spy, "/api/opportunity/consensus-detail/").length;
+    const row = within(results).getByRole("row", { name: /^AAA Long Call/ });
+    const toggle = within(row).getByRole("button", { name: "AAA 共識詳細資料" });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const panel = await within(results).findByRole("region", { name: "AAA 共識明細" });
+    expect(await within(panel).findByRole("list", { name: "共識數值" }))
+      .toHaveTextContent("平均目標價");
+    expect(panel.closest("td")).toHaveAttribute("colspan", "10");
+    expect(callsTo(spy, "/api/opportunity/consensus-detail/").slice(before).map(([u]) => String(u)))
+      .toEqual(["/api/opportunity/consensus-detail/AAA"]);
+
+    await user.click(toggle);
+    expect(within(results).queryByRole("region", { name: "AAA 共識明細" })).not.toBeInTheDocument();
   });
 });
 
@@ -450,7 +479,12 @@ describe("OpportunityPage：文案", () => {
   it("固定一句條件情境報酬說明；不出現期望報酬、預期獲利，勝率只出現在那句否定說明裡", async () => {
     await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
     await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
-    await screen.findByRole("region", { name: "搜尋結果" });
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    // 連資料狀態、失敗清單與打開的共識明細一起檢查。
+    await screen.findByRole("listitem", { name: "今日更新" });
+    const row = within(results).getByRole("row", { name: /^AAA Long Call/ });
+    await userEvent.click(within(row).getByRole("button", { name: "AAA 共識詳細資料" }));
+    await within(results).findByRole("list", { name: "共識數值" });
     const disclaimer = "此報酬是『分析師平均目標價在目標月份成立時』的條件情境報酬，不是期望值或勝率";
     expect(screen.getByText(disclaimer)).toBeInTheDocument();
     const text = document.body.textContent ?? "";
@@ -485,6 +519,6 @@ describe("OpportunityPage：存成劇本", () => {
     expect(await within(results).findByRole("alert")).toHaveTextContent(quota);
     expect(window.location.hash).toBe("#/opportunity");
     expect(within(row).getByRole("button", { name: "存成劇本" })).toBeEnabled();
-    expect(screen.queryByText(/已存成劇本|已建立/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已存成劇本|已建立劇本|劇本已建立/)).not.toBeInTheDocument();
   });
 });

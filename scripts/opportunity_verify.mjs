@@ -439,8 +439,10 @@ async function unconfiguredFlow(browser) {
   await page.goto(`${BASE_UNCONFIGURED}/#/`);
   await uiLogin(page, BASE_UNCONFIGURED, secrets.OC_VERIFY_SU_PASSWORD);
   await page.goto(`${BASE_UNCONFIGURED}/#/opportunity`);
-  await page.getByRole("heading", { name: "尚未設定分析師資料來源" }).waitFor({ timeout: 15000 });
-  check("未設定來源：SU 看到「尚未設定分析師資料來源」", true);
+  // LIVE-T5（#401）：部署環境預設啟用真實來源，沒有來源只會是緊急關閉開關生效。
+  await page.getByRole("heading", { name: "分析師資料來源已關閉" }).waitFor({ timeout: 15000 });
+  check("未設定來源：SU 看到「分析師資料來源已關閉」（緊急關閉），沒有任何按鈕",
+        (await page.locator(".opp-page").getByRole("button").count()) === 0);
   check("未設定來源：沒有搜尋按鈕、沒有清單、沒有測試資料標示",
         (await page.getByRole("button", { name: "搜尋選擇權" }).count()) === 0
         && (await page.getByRole("region", { name: "入選股" }).count()) === 0
