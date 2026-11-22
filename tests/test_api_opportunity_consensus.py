@@ -457,15 +457,26 @@ def test_daily_digest_says_when_the_source_is_not_configured(monkeypatch):
     assert "尚未設定分析師資料來源" in text
 
 
-def test_consensus_refresh_is_scheduled_once_a_day_before_the_digest():
+def test_consensus_refresh_is_scheduled_daily_twice_before_the_digest():
+    """Hobby 的 cron 每個條目一天最多一次、觸發時間 ±59 分（LIVE-T3／#398 查證）。
+    一次呼叫受 45 秒預算約束，真實 Yahoo 約 1.5 秒／檔（含 1 秒間隔）≈ 30 檔，
+    50 檔的大型股樣本要兩次——所以同一路徑排兩個每日條目，都在摘要之前、
+    相隔至少兩小時（±59 分也不會重疊；就算重疊，處理中標記也不會重複抓）。"""
     import json
     from pathlib import Path
-    crons = {c["path"]: c["schedule"]
-             for c in json.loads(Path("vercel.json").read_text())["crons"]}
-    minute, hour, dom, month, dow = crons["/api/cron/consensus-refresh"].split()
-    assert minute.isdigit() and hour.isdigit() and dom == "*" and month == "*"
-    digest_hour = int(crons["/api/cron/daily-digest"].split()[1])
-    assert int(hour) < digest_hour   # 摘要讀得到當天的更新統計
+    entries = json.loads(Path("vercel.json").read_text())["crons"]
+    hours = []
+    for c in entries:
+        if c["path"] != "/api/cron/consensus-refresh":
+            continue
+        minute, hour, dom, month, dow = c["schedule"].split()
+        assert minute.isdigit() and hour.isdigit() and dom == "*" and month == "*"
+        hours.append(int(hour))
+    digest = next(c for c in entries if c["path"] == "/api/cron/daily-digest")
+    digest_hour = int(digest["schedule"].split()[1])
+    assert len(hours) >= 2
+    assert all(h < digest_hour for h in hours)   # 摘要讀得到當天的更新統計
+    assert min(b - a for a, b in zip(sorted(hours), sorted(hours)[1:])) >= 2
 
 
 # ---------- 契約樣本（前端 mock 與後端共用） ----------

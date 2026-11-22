@@ -46,6 +46,10 @@ class ProviderResult:
     history_from: date | None = None
     error: str | None = None
     cross_check: ConsensusCrossCheck | None = None   # 只供稽核（L9）
+    # LIVE-T3（#398）：失敗是不是上游限流（429），以及它給的 `Retry-After`
+    # 秒數（沒給＝`None`）。更新核心據此決定下次可重試時間，不解析 `error` 文字。
+    rate_limited: bool = False
+    retry_after: int | None = None
 
     def __post_init__(self) -> None:
         if self.coverage not in COVERAGES:
@@ -134,7 +138,9 @@ class YahooAnalystSource:
             data = self.client.fetch(symbol)
         except YahooError as e:
             hint = f"（Retry-After {e.retry_after} 秒）" if e.retry_after else ""
-            return ProviderResult(coverage="partial", error=f"{e}{hint}")
+            return ProviderResult(coverage="partial", error=f"{e}{hint}",
+                                  rate_limited=e.rate_limited,
+                                  retry_after=e.retry_after)
         return self.to_provider_result(symbol, data)
 
     def to_provider_result(self, symbol: str, data: YahooSymbolData) -> ProviderResult:

@@ -180,6 +180,13 @@ def test_rate_limit_is_reported_with_the_retry_after_hint():
     result, _ = _fetch("AAPL", summary_statuses=[(429, {"Retry-After": "120"})])
     assert result.records == ()
     assert "429" in result.error and "120" in result.error
+    # LIVE-T3（#398）：結構化欄位，更新核心不必解析文字。
+    assert result.rate_limited is True and result.retry_after == 120
+
+
+def test_non_429_failures_are_not_marked_rate_limited():
+    result, _ = _fetch("ZZZZQ")
+    assert result.rate_limited is False and result.retry_after is None
 
 
 def test_unknown_symbol_is_reported_as_no_analyst_data():
@@ -314,3 +321,4 @@ def test_bad_split_entries_are_skipped():
 def test_unparseable_retry_after_is_ignored():
     result, _ = _fetch("AAPL", summary_statuses=[(429, {"Retry-After": "inf"})])
     assert "429" in result.error and "Retry-After" not in result.error
+    assert result.rate_limited is True and result.retry_after is None

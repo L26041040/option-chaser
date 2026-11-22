@@ -13,10 +13,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import consensusSample from "../contracts/opportunity_consensus_sample.json";
+import statusSample from "../contracts/opportunity_consensus_status_sample.json";
 import searchSample from "../contracts/opportunity_search_sample.json";
 import OpportunityPage from "./OpportunityPage";
 import {
   ApiError,
+  type ConsensusRefreshStatusResponse,
   type OpportunityConsensusResponse,
   type OpportunitySearchResponse,
 } from "./api";
@@ -24,6 +26,7 @@ import type { Role } from "./superuser";
 
 const CONSENSUS = consensusSample as unknown as OpportunityConsensusResponse;
 const SEARCH = searchSample as unknown as OpportunitySearchResponse;
+const STATUS = statusSample as unknown as ConsensusRefreshStatusResponse;
 
 const NOT_CONFIGURED: OpportunityConsensusResponse = {
   ...CONSENSUS,
@@ -51,6 +54,8 @@ function mockApi({
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.startsWith("/api/auth/status")) return res(200, { role });
+    // LIVE-T3（#398）的分析師資料區塊：本檔不測它（見 AnalystUpdatePanel.test.tsx）。
+    if (u.startsWith("/api/opportunity/consensus/status")) return res(200, STATUS);
     if (u.startsWith("/api/opportunity/consensus")) {
       const r = await consensus;
       return res(r.status, r.body);

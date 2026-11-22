@@ -341,6 +341,15 @@ class AnalyzeRequest(BaseModel):
         return list(dict.fromkeys(v))
 
 
+class ConsensusUpdateRequest(BaseModel):
+    """`POST /api/opportunity/consensus/update`（LIVE-T3／#398）。`symbols`
+    省略＝整個更新母體（前端依 `remaining` 自動續跑）；給了＝只重試這幾檔
+    （必須在更新母體裡），不能重試時回 409／429 並說明原因。"""
+    symbols: list[str] | None = Field(
+        default=None, min_length=1,
+        max_length=consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP)
+
+
 class CreateScenarioRequest(BaseModel):
     symbol: str = _SYMBOL
     target_price: float = Field(gt=0)
@@ -883,6 +892,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                consensus_rules: ConsensusRules | None = None,
                target_month_rule: str | None = None,
                consensus_refresh_symbol_cap: int | None = None,
+               consensus_refresh_policy: consensus_cache.RefreshPolicy | None = None,
+               consensus_refresh_sleep: Callable[[float], None] | None = None,
                ) -> FastAPI:
     """`fetch`／`storage`／`rate_loader`／`dividend_loader` 皆可注入：
     測試傳入固定快照、記憶體假體與假來源，因此不打真網路、不碰真資料庫，
@@ -991,6 +1002,13 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     見 `consensus_cache.refresh_universe()`）。`None` 讀環境變數
     `CONSENSUS_REFRESH_SYMBOL_CAP`，再落回
     `consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP`（200，數值待 #386）。
+
+    `consensus_refresh_policy`（LIVE-T3／#398）：分析師資料更新的重試次數、
+    冷卻、429 冷卻、每日上游呼叫上限、處理中標記逾時、呼叫間隔與 SU 端點
+    每批檔數（`consensus_cache.RefreshPolicy`）。`None` 讀 `CONSENSUS_*`
+    環境變數（`RefreshPolicy.from_env()`），再落回預設。cron 與 SU 的
+    「更新分析師資料」共用同一份。`consensus_refresh_sleep`：呼叫間隔用的
+    等待函式，預設 `time.sleep`（測試注入記錄器）；「現在幾點」沿用 `clock`。
 
     `cron_secret`（SCALE-07／#257，Treasury Cron）：`GET /api/cron/
     warm-rate-cache` 驗證 `Authorization: Bearer <cron_secret>` 用的
@@ -1246,6 +1264,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         consensus_refresh_symbol_cap if consensus_refresh_symbol_cap is not None
         else _env_int("CONSENSUS_REFRESH_SYMBOL_CAP",
                       consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP)))
+    _effective_consensus_refresh_policy = (consensus_refresh_policy
+                                           or consensus_cache.RefreshPolicy.from_env())
+    _consensus_refresh_sleep = consensus_refresh_sleep or time.sleep
     # PB-08（#300）：同一套注入／環境變數慣例，但**沒有**「`<=0` 停用」
     # 語意——Codex P1（PR #346）：這三個是清理的天數，0 或負數不是
     # 「關掉清理」，而是「立刻就可以刪」。照其他變數的 `<=0` 慣例設下去
@@ -2048,21 +2069,31 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def cron_consensus_refresh(request: Request) -> dict:
         """每日一次（`vercel.json` crons）。來源未設定時什麼都不做。
 
-        母體 = 大型股樣本 ∪ SU／SA 的自訂清單（總數有上限）；同一交易日每檔
-        最多抓一次上游，一次呼叫受 `refresh_run_budget` 約束，跑不完的由下一次
-        觸發接續（游標＝每檔的 attempted_day，見 `api_app/consensus_cache.py`）。
-        授權失敗先驗證再動作，比照其他 cron。"""
+        母體 = 大型股樣本 ∪ SU／SA 的自訂清單（總數有上限）；與 SU 的「更新分析師
+        資料」同一套核心（`_refresh_consensus()`）：成功的同一交易日不再抓、
+        失敗的依重試規則、每日上游上限、處理中標記。一次呼叫受
+        `refresh_run_budget` 約束，跑不完的由下一次觸發接續（游標＝每檔的
+        attempted_day，見 `api_app/consensus_cache.py`）。授權失敗先驗證再
+        動作，比照其他 cron。"""
         if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         if analyst_source is None:
             return {"skipped": "source_not_configured"}
-        deadline = time.monotonic() + refresh_run_budget.total_seconds()
-        universe = consensus_cache.refresh_universe(
+        return _refresh_consensus(_consensus_update_universe(), batch_limit=None)
+
+    def _consensus_update_universe() -> list[str]:
+        return consensus_cache.refresh_universe(
             _db(), cap=_effective_consensus_refresh_symbol_cap)
+
+    def _refresh_consensus(symbols: list[str], *, batch_limit: int | None) -> dict:
+        """cron 與 SU 端點共用的唯一入口（LIVE-T3／#398）。"""
+        deadline = time.monotonic() + refresh_run_budget.total_seconds()
         return consensus_cache.refresh_symbols(
-            _db(), analyst_source, universe, ny_today(),
+            _db(), analyst_source, symbols, ny_today(),
             budget_exhausted=lambda: time.monotonic() >= deadline,
-            rules=_effective_consensus_rules)
+            rules=_effective_consensus_rules,
+            policy=_effective_consensus_refresh_policy,
+            clock=_clock, sleep=_consensus_refresh_sleep, batch_limit=batch_limit)
 
     # ---------- 匿名擁有者生命週期清理（PB-08／#300） ----------
 
@@ -3943,6 +3974,65 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             _db(), analyst_source, opportunity, ny_today(),
             rules=_effective_consensus_rules,
             target_month_rule=_effective_target_month_rule)
+
+    # ---------- 機會搜尋：更新分析師資料（LIVE-T3／#398） ----------
+
+    @app.post("/api/opportunity/consensus/update")
+    def opportunity_consensus_update(body: ConsensusUpdateRequest) -> dict:
+        """SU／SA 的「更新分析師資料」與單檔「重試」，與每日 cron 同一套核心
+        （`_refresh_consensus()`）：每次呼叫只處理一小批（`batch_size`，受
+        `refresh_run_budget` 約束），其餘放 `remaining`，前端依它自動續跑；
+        回應帶全體進度（`progress`）。
+
+        指定 `symbols`（重試）時：不在更新母體裡 400；一檔都不能抓時照實
+        拒絕、不打上游——每日上限已滿 429（`consensus_daily_cap`），其餘
+        （今天已成功、冷卻中、重試用完、別人正在處理）409
+        （`consensus_not_retryable`，帶 `state`／`next_retry_at`）。"""
+        _require_opportunity_role()
+        if analyst_source is None:
+            raise HTTPException(status_code=409,
+                                detail=consensus_cache.NOT_CONFIGURED_MESSAGE)
+        universe = _consensus_update_universe()
+        symbols = universe
+        if body.symbols is not None:
+            symbols = list(dict.fromkeys(body.symbols))
+            allowed = set(universe)
+            outside = [s for s in symbols if s not in allowed]
+            if outside:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"這些代號不在分析師資料的更新範圍：{'、'.join(outside)}")
+        result = _refresh_consensus(
+            symbols, batch_limit=_effective_consensus_refresh_policy.batch_size)
+        if body.symbols is not None and not result["processed_symbols"]:
+            if result["stopped_reason"] == "daily_cap":
+                raise HTTPException(status_code=429, detail={
+                    "stage": consensus_cache.DAILY_CAP_STAGE,
+                    "message": result["message"],
+                    "upstream_calls_today": result["upstream_calls_today"],
+                    "daily_cap": result["daily_cap"]})
+            if result["skipped"]:
+                skip = result["skipped"][0]
+                raise HTTPException(status_code=409, detail={
+                    "stage": consensus_cache.NOT_RETRYABLE_STAGE,
+                    "message": f"{skip['symbol']}：{skip['message']}",
+                    "symbol": skip["symbol"], "state": skip["state"],
+                    "next_retry_at": skip["next_retry_at"]})
+        status = _consensus_status(universe)
+        return {**result, "progress": status["progress"]}
+
+    @app.get("/api/opportunity/consensus/status")
+    def opportunity_consensus_status() -> dict:
+        """更新狀態（只限 SU／SA）：每檔最後成功／嘗試時間、失敗原因、今日已
+        重試次數、下次可重試時間；全體進度、資料日期、今日上游呼叫數與參數。"""
+        _require_opportunity_role()
+        return _consensus_status(
+            _consensus_update_universe() if analyst_source is not None else [])
+
+    def _consensus_status(universe: list[str]) -> dict:
+        return consensus_cache.refresh_status(
+            _db(), analyst_source, universe, ny_today(), now=_clock(),
+            policy=_effective_consensus_refresh_policy)
 
     # ---------- 機會搜尋：跨標的搜尋（OS-04／#393） ----------
 

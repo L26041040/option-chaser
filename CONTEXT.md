@@ -380,10 +380,19 @@ _Avoid_: 範例資料、demo 資料（聽起來像可以上線）
 **Consensus Snapshot（共識快照）** — 某檔股票在某個美東交易日由 Analyst Target Record
 算出的一筆結果：有效分析師數、Consensus Target、標準差、Target Dispersion、Dispersion
 Percentile、覆蓋程度、資料品質狀態（`status`）與原因。全站共用、不屬於任何使用者（不含
-owner_id），存在共識快取；每個交易日最多向來源抓一次，失敗時保留上一份成功的快照並標
-它的日期。Consensus Gate 在**讀取時**才用每位使用者自己的門檻套上去，所以改門檻不必
-重抓來源。
+owner_id），存在共識快取；**成功**的股票同一交易日不再向來源抓，失敗時保留上一份成功
+的快照並標它的日期。Consensus Gate 在**讀取時**才用每位使用者自己的門檻套上去，所以改
+門檻不必重抓來源。
 _Avoid_: 共識分數、評分
+
+**Analyst Data Update（更新分析師資料）** — 把 Consensus Snapshot 更新到今天的動作：
+SU／SA 在機會搜尋頁按鈕觸發（一次一小批、依 `remaining` 自動續跑），每日 cron 也走同一套
+核心（LIVE-T3／#398）。失敗的股票同一交易日可以有限次**重試**（預設 3 次、每次先過 15
+分鐘冷卻；429 有 `Retry-After` 取它和冷卻較長者，沒有則冷卻 30 分鐘），用完改到下一個
+交易日。每次向來源抓一檔都算一次**上游呼叫**，重試也算，全站每日有上限（預設 400）；
+同一檔同一時間只有一次上游呼叫（**處理中標記**，逾時 120 秒自動失效）。參數都可由
+`create_app(consensus_refresh_policy=)` 或 `CONSENSUS_*` 環境變數設定。
+_Avoid_: 刷新（那是劇本的 Refresh，跟這個無關）
 
 **Opportunity 的最大損失（每股）** — 結果表的「最大損失 / 股」＝候選的
 `max_loss_per_contract ÷ 100`，與淨成本同一個每股口徑，也與既有詳細頁 Max Loss 的顯示

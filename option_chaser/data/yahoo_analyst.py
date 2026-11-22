@@ -100,11 +100,14 @@ class UrllibTransport:
 
 
 class YahooError(FetchError):
-    """可回報給使用者的失敗（訊息即原因）；`retry_after` 是 429 的秒數提示。"""
+    """可回報給使用者的失敗（訊息即原因）；`rate_limited` 為真代表上游回 429，
+    `retry_after` 是它給的秒數提示（沒給＝`None`）。"""
 
-    def __init__(self, message: str, *, retry_after: int | None = None):
+    def __init__(self, message: str, *, retry_after: int | None = None,
+                 rate_limited: bool = False):
         super().__init__(message)
         self.retry_after = retry_after
+        self.rate_limited = rate_limited
 
 
 @dataclass(frozen=True)
@@ -277,7 +280,8 @@ def _close_on_or_before(weekly_closes, day: date) -> Decimal | None:
 
 def _raise_for_status(resp: HttpResponse, what: str) -> None:
     if resp.status == 429:
-        raise YahooError(f"Yahoo 限流（{what} 429）", retry_after=_retry_after(resp.headers))
+        raise YahooError(f"Yahoo 限流（{what} 429）", retry_after=_retry_after(resp.headers),
+                         rate_limited=True)
     if resp.status == 404:
         raise YahooError("Yahoo 沒有這個 symbol 的分析師資料")
     if resp.status != 200:
@@ -303,7 +307,8 @@ class YahooClient:
         resp = self._get(CRUMB_URL)
         if resp.status == 429:
             raise YahooError("Yahoo 限流（取得 crumb 時 429）",
-                             retry_after=_retry_after(resp.headers))
+                             retry_after=_retry_after(resp.headers),
+                             rate_limited=True)
         crumb = resp.body.strip()
         if resp.status != 200 or not crumb or len(crumb) > 64 or "<" in crumb:
             raise YahooError(f"無法取得 Yahoo crumb（狀態碼 {resp.status}）")
