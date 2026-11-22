@@ -437,6 +437,68 @@ def test_jump_within_the_validity_window_without_split_info_is_a_suspect():
     assert "Jumper" in snap.reasons[0]
 
 
+def _stated(key, price, published_on, prior):
+    return replace(rec(key, price, published_on), prior_target=Decimal(str(prior)))
+
+
+def test_halving_stated_by_the_firm_itself_is_not_a_suspected_split():
+    """LIVE-T2（#399）：後一筆的 prior_target 等於前一筆的目標價＝券商明確寫了
+    這次調整（例：NVDA Bernstein 400→200、prior=400、Lowers），不是缺分割資訊。"""
+    records = (good_history() + today_records()
+               + [rec("Jumper", 200, date(2026, 3, 2)),
+                  _stated("Jumper", 100, date(2026, 11, 3), prior=200)])
+    assert "split_unresolved" not in statuses(compute_snapshot(records, [], AS_OF))
+
+
+def test_prior_target_within_a_small_rounding_tolerance_still_counts_as_stated():
+    records = (good_history() + today_records()
+               + [rec("Jumper", 200, date(2026, 3, 2)),
+                  _stated("Jumper", 100, date(2026, 11, 3), prior="199.5")])
+    assert "split_unresolved" not in statuses(compute_snapshot(records, [], AS_OF))
+
+
+def test_missing_intermediate_update_is_judged_against_the_stated_prior():
+    """Yahoo 漏記中間那次調整（NVDA Raymond James 165 → [漏 291] → 323、
+    prior=291）：prior→323 是券商明確寫的調整；只有 165→291 這段沒有交代，
+    它不接近分割比例 → 不是疑似分割。"""
+    records = (good_history() + today_records()
+               + [rec("Jumper", 165, date(2026, 3, 2)),
+                  _stated("Jumper", 323, date(2026, 11, 3), prior=291)])
+    assert "split_unresolved" not in statuses(compute_snapshot(records, [], AS_OF))
+
+
+def test_prior_target_that_does_not_match_the_earlier_target_is_still_a_suspect():
+    # prior 寫的是 50（＝分割後基準的舊值）：前一筆 200 的 4:1 換算 → 仍是疑似分割
+    records = (good_history() + today_records()
+               + [rec("Jumper", 200, date(2026, 3, 2)),
+                  _stated("Jumper", 50, date(2026, 11, 3), prior=50)])
+    snap = compute_snapshot(records, [], AS_OF)
+    assert snap.status == "split_unresolved"
+    assert "Jumper" in snap.reasons[0]
+
+
+def test_prior_target_is_compared_on_the_same_split_basis():
+    # 前一筆 400 發布於 4:1 分割前（換算 100）；後一筆在分割後寫 50、prior=100
+    # （分割後基準的前值）→ 換算後 100→50 是明確下修，不是疑似分割。
+    split = SplitEvent("XYZ", date(2026, 6, 1), Decimal(4))
+    records = [rec("Jumper", 400, date(2026, 3, 2)),
+               _stated("Jumper", 50, date(2026, 11, 3), prior=100)]
+    assert "split_unresolved" not in statuses(compute_snapshot(records, [split], AS_OF))
+    # 前值寫成前一筆當時的原值 400（Yahoo 常見寫法）也一樣對得上
+    raw = [rec("Jumper", 400, date(2026, 3, 2)),
+           _stated("Jumper", 25, date(2026, 11, 3), prior=400)]
+    assert "split_unresolved" not in statuses(compute_snapshot(raw, [split], AS_OF))
+
+
+def test_adjusts_record_does_not_explain_away_a_missing_split():
+    # 「Adjusts」＝因分割改寫基準；分割日曆漏了這次分割時仍必須抓出來
+    adjusted = replace(_stated("Jumper", 100, date(2026, 11, 3), prior=400),
+                       action="Adjusts")
+    records = good_history() + today_records() + [rec("Jumper", 400, date(2026, 3, 2)),
+                                                  adjusted]
+    assert compute_snapshot(records, [], AS_OF).status == "split_unresolved"
+
+
 def test_every_failed_rule_is_reported_and_status_is_the_most_basic_one():
     four = [rec(f"Firm {i}", 100 + i, date(2026, 6, 1)) for i in range(4)]
     snap = compute_snapshot(four, [], AS_OF)

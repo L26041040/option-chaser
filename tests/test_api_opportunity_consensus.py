@@ -223,7 +223,7 @@ def test_thresholds_and_rules_are_reported():
     assert body["thresholds"] == {"percentile_max": 20, "dispersion_max": 10}
     assert body["rules"]["provisional"] is True
     assert body["rules"]["n_min"] == 5
-    assert body["rules"]["rules_version"] == "provisional-389"
+    assert body["rules"]["rules_version"] == "provisional-399"
 
 
 # ---------- 改門檻：立即生效、不重打上游 ----------

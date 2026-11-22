@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import consensusSample from "../contracts/opportunity_consensus_sample.json";
+import detailSample from "../contracts/opportunity_detail_sample.json";
 import searchSample from "../contracts/opportunity_search_sample.json";
 import OpportunityPage from "./OpportunityPage";
 import {
@@ -51,6 +52,11 @@ function mockApi({
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.startsWith("/api/auth/status")) return res(200, { role });
+    if (u.startsWith("/api/opportunity/consensus/")) {
+      const symbol = decodeURIComponent(u.split("/").pop() ?? "");
+      return res(200, { ...detailSample, symbol,
+                        item: { ...detailSample.item, symbol } });
+    }
     if (u.startsWith("/api/opportunity/consensus")) {
       const r = await consensus;
       return res(r.status, r.body);
@@ -182,6 +188,26 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
       .toHaveTextContent("來源僅有共識值，沒有個別目標價");
     expect(within(thin).getByRole("listitem", { name: "GGG" })).toHaveTextContent("來源失敗");
     expect(within(weak).queryByRole("listitem", { name: "DDD" })).not.toBeInTheDocument();
+  });
+});
+
+describe("OpportunityPage：個股詳細資料（LIVE-T2／#399）", () => {
+  it("入選與未入選的每一列都能打開詳細資料；按下才讀那一檔", async () => {
+    const user = userEvent.setup();
+    const { spy } = await renderReady();
+    const selected = await screen.findByRole("region", { name: "入選股" });
+    const thin = screen.getByRole("region", { name: "資料不足" });
+    const weak = screen.getByRole("region", { name: "共識不夠" });
+    for (const [region, symbol] of [[selected, "AAA"], [weak, "BBB"], [thin, "DDD"]] as const) {
+      expect(within(region).getByRole("button", { name: `${symbol} 詳細資料` }))
+        .toBeInTheDocument();
+    }
+    expect(callsTo(spy, "/api/opportunity/consensus/")).toHaveLength(0);
+    await user.click(within(thin).getByRole("button", { name: "DDD 詳細資料" }));
+    const panel = await within(thin).findByRole("region", { name: "DDD 共識明細" });
+    expect(await within(panel).findByRole("list", { name: "每月分歧度" })).toBeInTheDocument();
+    expect(callsTo(spy, "/api/opportunity/consensus/").map(([u]) => String(u)))
+      .toEqual(["/api/opportunity/consensus/DDD"]);
   });
 });
 

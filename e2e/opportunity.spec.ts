@@ -18,6 +18,7 @@ function contract(name: string): any {
 
 const consensus = contract("opportunity_consensus_sample.json");
 const search = contract("opportunity_search_sample.json");
+const detail = contract("opportunity_detail_sample.json");
 const sampleRow = contract("scenario_row_sample.json");
 
 const isDesktop = () => test.info().project.name === "Desktop";
@@ -154,6 +155,41 @@ test("超過單次上限：顯示尚有幾檔未搜尋，按鈕對那些檔發�
   expect(bodies).toEqual([{}, { symbols: ["EEE"] }]);
   await expect(page.getByText(/超過單次上限/)).toHaveCount(0);
   await expect(page.getByText("已搜尋 2 / 2 檔")).toBeVisible();
+});
+
+test("個股詳細資料（#399）：入選與資料不足的列都能打開，有效目標價與每月序列，無水平捲動", async ({ page }) => {
+  await routeBase(page, "superuser");
+  await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
+  const asked: string[] = [];
+  await page.route("**/api/opportunity/consensus/*", (route) => {
+    const symbol = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop()!);
+    asked.push(symbol);
+    return route.fulfill({ json: { ...detail, symbol, item: { ...detail.item, symbol } } });
+  });
+
+  await page.goto("/#/opportunity");
+  const selected = page.getByRole("region", { name: "入選股" });
+  await selected.getByRole("button", { name: "AAA 詳細資料" }).click();
+  const panel = selected.getByRole("region", { name: "AAA 共識明細" });
+  await expect(panel.getByRole("list", { name: "共識數值" })).toContainText("平均目標價$252.86");
+  const targets = panel.getByRole("list", { name: /^有效目標價/ });
+  await expect(targets.getByRole("listitem")).toHaveCount(detail.effective.length);
+  await expect(targets.getByRole("listitem", { name: "Bernstein" })).toContainText("$200.00");
+  await expect(panel.getByRole("list", { name: "每月分歧度" }).getByRole("listitem"))
+    .toHaveCount(detail.series.length);
+  await expect(panel.getByText(`每月分歧度（合格 ${detail.qualified_points} / ${detail.series.length} 個月）`))
+    .toBeVisible();
+  await noHorizontalScroll(page);
+
+  const thin = page.getByRole("region", { name: "資料不足" });
+  await thin.getByRole("button", { name: "DDD 詳細資料" }).click();
+  await expect(thin.getByRole("region", { name: "DDD 共識明細" })
+    .getByRole("list", { name: "共識數值" })).toBeVisible();
+  await noHorizontalScroll(page);
+  expect(asked).toEqual(["AAA", "DDD"]);
+
+  await selected.getByRole("button", { name: "AAA 詳細資料" }).click();
+  await expect(panel).toHaveCount(0);
 });
 
 test("來源未設定：顯示「尚未設定分析師資料來源」，沒有搜尋按鈕，不打搜尋端點", async ({ page }) => {

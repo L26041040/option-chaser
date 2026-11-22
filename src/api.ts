@@ -1332,6 +1332,55 @@ export function getOpportunityConsensus(
   return request<OpportunityConsensusResponse>("/api/opportunity/consensus", { signal });
 }
 
+/** LIVE-T2（#399）：有效集合的一筆——原始目標價與以資料日為基準的分割
+ *  換算值（`adjusted_price` 才是進平均／標準差的值）。 */
+export interface ConsensusEffectiveTarget {
+  analyst_key: string;
+  firm: string;
+  target_price: number;
+  adjusted_price: number;
+  published_on: string;
+  action: string | null;
+  prior_target: number | null;
+}
+
+/** 每月歷史序列的一點（月底取樣）。`qualified` 為假時 `reason` 說明為何
+ *  不進百分位（`insufficient_analysts`／`split_unresolved`）。 */
+export interface ConsensusSeriesPoint {
+  on: string;
+  n_analysts: number;
+  mean: number | null;
+  stdev: number | null;
+  dispersion: number | null;
+  qualified: boolean;
+  reason: string | null;
+}
+
+/** LIVE-T2（#399）：`GET /api/opportunity/consensus/{symbol}`（只限 SU／SA，
+ *  只讀快取）。形狀以 `contracts/opportunity_detail_sample.json` 為準。
+ *  `item` 與共識清單的項目同一份；`detail_available` 為假時明細（`effective`／
+ *  `series`）尚未就緒、兩者為空。來源未設定時 `item` 為 null、帶 `message`。 */
+export interface OpportunityConsensusDetail {
+  symbol: string;
+  source: OpportunityConsensusResponse["source"];
+  thresholds: OpportunityConsensusResponse["thresholds"];
+  rules: OpportunityConsensusResponse["rules"];
+  item: ConsensusItem | null;
+  effective: ConsensusEffectiveTarget[];
+  series: ConsensusSeriesPoint[];
+  qualified_points: number;
+  detail_available: boolean;
+  message?: string;
+}
+
+export function getOpportunityConsensusDetail(
+  symbol: string,
+  signal?: AbortSignal,
+): Promise<OpportunityConsensusDetail> {
+  return request<OpportunityConsensusDetail>(
+    `/api/opportunity/consensus/${encodeURIComponent(symbol)}`, { signal });
+}
+
 /** OS-04（#393）：`POST /api/opportunity/search` 的請求（每個欄位都可省略：
  *  `symbols` 省略＝目前入選清單，續跑時傳回上次的 `remaining`；
  *  `strategies`／`sort` 省略＝使用者設定）。 */

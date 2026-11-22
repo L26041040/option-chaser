@@ -24,7 +24,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, LEGACY_SINGLETON_TABLES, RETIRED_TABLES, SCENARIO_CHILD_TABLES,
-               BrowserIdentity, ChainBackoffEntry, ConsensusRefreshState,
+               BrowserIdentity, ChainBackoffEntry, ConsensusDetailRecord, ConsensusRefreshState,
                ConsensusSnapshotRecord, ContractHistory,
                ResolvedCredential,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
@@ -175,6 +175,15 @@ CREATE TABLE IF NOT EXISTS consensus_snapshots (
     snapshot          JSONB NOT NULL,
     computed_at       TEXT NOT NULL,
     PRIMARY KEY (symbol, as_of)
+);
+-- 個股共識明細（LIVE-T2／#399）：**全站共用、不含 owner**。每個 symbol
+-- 只留最新一筆（有效集合＋每月序列），跨天稽核由 consensus_snapshots 承擔。
+CREATE TABLE IF NOT EXISTS consensus_details (
+    symbol            TEXT PRIMARY KEY,
+    as_of             TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    detail            JSONB NOT NULL,
+    computed_at       TEXT NOT NULL
 );
 -- 每個 symbol 最後一次向資料來源嘗試的狀態（同日最多抓一次＋cron 游標）。
 CREATE TABLE IF NOT EXISTS consensus_refresh_state (
@@ -1203,6 +1212,28 @@ class PostgresStorage:
                                               computed_at=r[5])
                 for r in rows}
 
+    def save_consensus_detail(self, record: ConsensusDetailRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO consensus_details "
+                "(symbol, as_of, source, detail, computed_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (symbol) DO UPDATE "
+                "SET as_of = EXCLUDED.as_of, source = EXCLUDED.source, "
+                "detail = EXCLUDED.detail, computed_at = EXCLUDED.computed_at",
+                (record.symbol, record.as_of, record.source,
+                 Jsonb(record.detail), record.computed_at))
+
+    def get_consensus_detail(self, symbol: str) -> ConsensusDetailRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, as_of, source, detail, computed_at "
+                "FROM consensus_details WHERE symbol = %s", (symbol,)).fetchone()
+        if row is None:
+            return None
+        return ConsensusDetailRecord(symbol=row[0], as_of=row[1], source=row[2],
+                                     detail=row[3], computed_at=row[4])
+
     def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -1441,7 +1472,7 @@ class PostgresStorage:
         "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff",
         "main_account", "owner_merge_archive", "identity_tombstones",
-        "consensus_snapshots", "consensus_refresh_state")
+        "consensus_snapshots", "consensus_refresh_state", "consensus_details")
 
     def table_row_counts(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -1492,7 +1523,7 @@ class PostgresStorage:
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
         `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
-        `consensus_snapshots`／`consensus_refresh_state`
+        `consensus_snapshots`／`consensus_refresh_state`／`consensus_details`
         ——這些表結構上就沒有 `owner_id` 欄位，本方法從不觸碰它們。
 
         刪除 `browser_identities`／`owners` 的理由（PB-04 §7

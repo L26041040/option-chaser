@@ -17,6 +17,7 @@ from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (RETIRED_TABLES, BrowserIdentity, ChainBackoffEntry,
+                         ConsensusDetailRecord,
                              ConsensusRefreshState, ConsensusSnapshotRecord,
                              ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
@@ -92,7 +93,7 @@ def storage(request):
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
                      "role_sessions, rate_limits, feedback, identity_tombstones, "
-                     "consensus_snapshots, consensus_refresh_state "
+                     "consensus_snapshots, consensus_refresh_state, consensus_details "
                      "RESTART IDENTITY")
     yield st
 
@@ -605,6 +606,43 @@ def test_consensus_refresh_state_is_one_row_per_symbol(storage):
     storage.save_consensus_refresh_state(replace(first, symbol="BBB"))
     assert storage.consensus_refresh_states() == {"AAA": later,
                                                   "BBB": replace(first, symbol="BBB")}
+
+
+# ---------- 個股共識明細（LIVE-T2／#399，全站共用、不含 owner） ----------
+#
+# 每個 symbol 只留最新一筆（有效集合＋每月序列）；跨天的 point-in-time 稽核
+# 由 consensus_snapshots（含合格歷史點）承擔，明細不跨天累積、大小有上限。
+
+
+def _detail_record(symbol="AAA", as_of="2026-09-28", *, source="fixture"):
+    return ConsensusDetailRecord(
+        symbol=symbol, as_of=as_of, source=source,
+        detail={"effective": [{"firm": "Firm A", "target_price": "120.5",
+                               "adjusted_price": "30.125",
+                               "published_on": "2026-09-01"}],
+                "series": [{"on": "2026-08-31", "n_analysts": 6,
+                            "dispersion": "0.081", "qualified": True,
+                            "reason": None}]},
+        computed_at=f"{as_of}T14:00:00+00:00")
+
+
+def test_consensus_detail_starts_empty(storage):
+    assert storage.get_consensus_detail("AAA") is None
+
+
+def test_consensus_detail_roundtrips(storage):
+    rec = _detail_record()
+    storage.save_consensus_detail(rec)
+    assert storage.get_consensus_detail("AAA") == rec
+
+
+def test_consensus_detail_keeps_only_the_latest_row_per_symbol(storage):
+    storage.save_consensus_detail(_detail_record(as_of="2026-09-25"))
+    later = _detail_record(as_of="2026-09-28", source="other")
+    storage.save_consensus_detail(later)
+    storage.save_consensus_detail(_detail_record("BBB"))
+    assert storage.get_consensus_detail("AAA") == later
+    assert storage.get_consensus_detail("BBB").symbol == "BBB"
 
 
 def _owner_with_role(storage, owner_id, *, owner_role="normal", device_role=None):

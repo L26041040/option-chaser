@@ -23,7 +23,7 @@
     "dispersion_max": 10.0
   },
   "rules": {
-    "rules_version": "provisional-389",
+    "rules_version": "provisional-399",
     "provisional": true,
     "n_min": 5,
     "validity_months": 12,
@@ -59,7 +59,7 @@
         "reasons": []
       },
       "target_month": "2027-09",
-      "rules_version": "provisional-389",
+      "rules_version": "provisional-399",
       "refresh_error": null
     },
     {
@@ -87,7 +87,7 @@
         ]
       },
       "target_month": "2027-09",
-      "rules_version": "provisional-389",
+      "rules_version": "provisional-399",
       "refresh_error": null
     },
     {
@@ -115,7 +115,7 @@
         ]
       },
       "target_month": "2027-09",
-      "rules_version": "provisional-389",
+      "rules_version": "provisional-399",
       "refresh_error": null
     },
     {
@@ -147,7 +147,7 @@
         ]
       },
       "target_month": "2027-09",
-      "rules_version": "provisional-389",
+      "rules_version": "provisional-399",
       "refresh_error": null
     },
     {
@@ -173,7 +173,7 @@
         "reasons": []
       },
       "target_month": "2027-09",
-      "rules_version": "provisional-389",
+      "rules_version": "provisional-399",
       "refresh_error": null
     },
     {
@@ -205,7 +205,7 @@
         ]
       },
       "target_month": "2027-09",
-      "rules_version": "provisional-389",
+      "rules_version": "provisional-399",
       "refresh_error": null
     },
     {

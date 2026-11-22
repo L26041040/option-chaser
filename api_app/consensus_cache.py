@@ -33,7 +33,8 @@ from option_chaser.consensus import ConsensusCrossCheck, ConsensusRules, Consens
 from . import search_universe
 from .opportunity_settings import DEFAULT_DISPERSION_MAX, DEFAULT_PERCENTILE_MAX
 from .analyst_source import AnalystSource
-from .storage import ConsensusRefreshState, ConsensusSnapshotRecord, Storage
+from .storage import (ConsensusDetailRecord, ConsensusRefreshState,
+                      ConsensusSnapshotRecord, Storage)
 
 # 資料品質規則 R 與 target_month 規則：全站一份（不在使用者設定，#389 §6），
 # 數值待 #385／#381。這裡只是**暫定預設**——實際值由
@@ -108,6 +109,27 @@ def snapshot_from_dict(d: dict) -> ConsensusSnapshot:
                      if d.get("computed_at") else None))
 
 
+# ---------- 個股明細 ⇄ JSON（LIVE-T2／#399） ----------
+
+def detail_to_dict(s: ConsensusSnapshot) -> dict:
+    """`compute_snapshot()` 同一次計算的有效集合與每月序列（Decimal 存字串）。
+    與 Snapshot 分開存：清單一次讀幾百檔的 Snapshot，不該拖著明細。"""
+    return {
+        "effective": [{"analyst_key": e.analyst_key, "firm": e.firm,
+                       "target_price": str(e.target_price),
+                       "adjusted_price": str(e.adjusted_price),
+                       "published_on": e.published_on.isoformat(),
+                       "action": e.action,
+                       "prior_target": _decimal_to_str(e.prior_target)}
+                      for e in s.effective],
+        "series": [{"on": p.on.isoformat(), "n_analysts": p.n_analysts,
+                    "mean": _decimal_to_str(p.mean), "stdev": _decimal_to_str(p.stdev),
+                    "dispersion": _decimal_to_str(p.dispersion),
+                    "qualified": p.qualified, "reason": p.reason}
+                   for p in s.series],
+    }
+
+
 # ---------- 更新 ----------
 
 def refresh_universe(storage: Storage, *,
@@ -147,6 +169,7 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
             symbol=symbol, as_of=today.isoformat(), source=source.name,
             is_fixture=bool(source.is_fixture), snapshot=snapshot_to_dict(snap),
             computed_at=now.isoformat()))
+        save_detail(storage, source, snap)
     storage.save_consensus_refresh_state(ConsensusRefreshState(
         symbol=symbol, source=source.name, attempted_day=today.isoformat(),
         attempted_at=now.isoformat(), error=error))
@@ -338,6 +361,59 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
     }
     if source is None:
         body["message"] = NOT_CONFIGURED_MESSAGE
+    return body
+
+
+# ---------- 個股詳細資料（LIVE-T2／#399） ----------
+
+def save_detail(storage: Storage, source: AnalystSource, snap: ConsensusSnapshot) -> None:
+    """與 Snapshot 同一次計算的明細，每個 symbol 只留最新一筆。"""
+    storage.save_consensus_detail(ConsensusDetailRecord(
+        symbol=snap.symbol, as_of=snap.as_of.isoformat(), source=source.name,
+        detail=detail_to_dict(snap),
+        computed_at=(snap.computed_at or _now()).isoformat()))
+
+
+def _float_fields(row: dict, names: Sequence[str]) -> dict:
+    return {k: (float(v) if k in names and v is not None else v) for k, v in row.items()}
+
+
+def detail_view(storage: Storage, source: AnalystSource | None, symbol: str,
+                opportunity: dict, today: date, *,
+                rules: ConsensusRules = DEFAULT_RULES,
+                target_month_rule: str = DEFAULT_TARGET_MONTH_RULE) -> dict:
+    """`GET /api/opportunity/consensus/{symbol}` 的完整回應——只讀快取。
+
+    `item` 與共識清單的項目同一個形狀、同一份計算（含依這位使用者門檻的
+    `gate`）；`effective`／`series` 來自同一次更新寫下的明細。明細與 Snapshot
+    不是同一天、或不是同一個來源（例如明細寫入前中斷）時不拿來冒充目前的
+    明細：`detail_available: false`、兩個清單為空，摘要數字照常。"""
+    thresholds = {"percentile_max": opportunity["percentile_max"],
+                  "dispersion_max": opportunity["dispersion_max"]}
+    body: dict = {"symbol": symbol, "thresholds": thresholds,
+                  "rules": rules_view(rules, target_month_rule),
+                  "item": None, "effective": [], "series": [],
+                  "qualified_points": 0, "detail_available": False}
+    if source is None:
+        body["source"] = {"configured": False, "name": None, "is_fixture": False}
+        body["message"] = NOT_CONFIGURED_MESSAGE
+        return body
+    body["source"] = {"configured": True, "name": source.name,
+                      "is_fixture": bool(source.is_fixture)}
+    [item] = _items(storage, source, [symbol], today,
+                    _pct_to_ratio(opportunity["percentile_max"]),
+                    _pct_to_ratio(opportunity["dispersion_max"]), target_month_rule)
+    body["item"] = item
+    rec = storage.get_consensus_detail(symbol)
+    if rec is None or rec.source != source.name or rec.as_of != item["as_of"]:
+        return body
+    body["effective"] = [_float_fields(e, ("target_price", "adjusted_price",
+                                           "prior_target"))
+                         for e in rec.detail["effective"]]
+    body["series"] = [_float_fields(p, ("mean", "stdev", "dispersion"))
+                      for p in rec.detail["series"]]
+    body["qualified_points"] = sum(1 for p in rec.detail["series"] if p["qualified"])
+    body["detail_available"] = True
     return body
 
 

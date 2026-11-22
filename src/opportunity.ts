@@ -58,3 +58,24 @@ export function mergeSearchRows(
   }
   return merged;
 }
+
+/** 共識 status → 畫面文字（清單與個股詳細資料共用）。 */
+export const STATUS_LABELS: Record<string, string> = {
+  insufficient_analysts: "分析師人數不足",
+  insufficient_history: "歷史資料不足",
+  stale: "資料過舊",
+  split_unresolved: "股票分割無法判定",
+  no_data: "無資料",
+  source_error: "來源失敗",
+};
+
+/** 0–1 的比例 → 「9.0%」。 */
+export function ratioPct(x: number | null): string {
+  return x === null ? "—" : `${(x * 100).toFixed(1)}%`;
+}
+
+/** 後端原因字串是「代碼: 說明」——畫面只要說明那一半。 */
+export function reasonText(reason: string): string {
+  const at = reason.indexOf(": ");
+  return at >= 0 ? reason.slice(at + 2) : reason;
+}

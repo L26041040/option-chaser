@@ -34,7 +34,7 @@ class AnalystTargetRecord:
     source: str = ""
     retrieved_at: datetime | None = None
     action: str | None = None
-    prior_target: Decimal | None = None          # 只作稽核，不參與計算
+    prior_target: Decimal | None = None          # 不進平均／標準差；只供疑似分割判斷（#399）
     split_adjusted_through: date | None = None   # A2：來源已反映到哪一天的分割
 
 
@@ -61,11 +61,14 @@ class ConsensusRules:
     split_ratios: tuple[Decimal, ...] = tuple(
         Decimal(r) for r in (2, 3, 4, 5, 8, 10, 15, 20))
     split_ratio_tolerance: Decimal = Decimal("0.03")
-    version: str = "provisional-389"
+    # LIVE-T2（#399）：後一筆的 prior_target 等於前一筆原始目標價的相對誤差
+    prior_target_tolerance: Decimal = Decimal("0.01")
+    version: str = "provisional-399"
 
     def __post_init__(self) -> None:
         # 允許呼叫端傳 float／int；內部一律 Decimal
-        for name in ("freshness_min_share", "split_ratio_tolerance"):
+        for name in ("freshness_min_share", "split_ratio_tolerance",
+                     "prior_target_tolerance"):
             object.__setattr__(self, name, _dec(getattr(self, name)))
         object.__setattr__(self, "split_ratios",
                            tuple(_dec(r) for r in self.split_ratios))
@@ -98,6 +101,35 @@ _PRIORITY = ("no_data", "split_unresolved", "insufficient_analysts", "stale",
 
 
 @dataclass(frozen=True)
+class EffectiveTarget:
+    """有效集合 S(as_of) 的一筆（LIVE-T2／#399 個股詳細資料用）：原始目標價
+    與以 as_of 為基準的分割換算值。`adjusted_price` 就是進平均／標準差的值。"""
+
+    analyst_key: str                 # 正規化＋別名後的 key（去重依據）
+    firm: str                        # 來源原始券商名（顯示用）
+    target_price: Decimal            # 來源給的原始值
+    published_on: date
+    adjusted_price: Decimal
+    action: str | None = None
+    prior_target: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class SeriesPoint:
+    """每月歷史序列的一個取樣點（LIVE-T2／#399）：以 tᵢ 為評估日、同一組規則
+    算出的當日數值。`qualified` 為真才進 `history`／百分位；不合格時 `reason`
+    是 `insufficient_analysts`（n < N_min）或 `split_unresolved`。"""
+
+    on: date
+    n_analysts: int
+    mean: Decimal | None
+    stdev: Decimal | None
+    dispersion: Decimal | None
+    qualified: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ConsensusSnapshot:
     """#389 §3。數值欄位在 status != ok 時仍可能有值，但門檻一律不通過。
     reasons 每條以 status 代碼開頭（例如 `"stale: …"`）。"""
@@ -122,6 +154,12 @@ class ConsensusSnapshot:
     rules_version: str = ""
     cross_check: ConsensusCrossCheck | None = None
     computed_at: datetime | None = None
+    # LIVE-T2（#399）：個股詳細資料。`effective`＝S(as_of)（依 analyst_key
+    # 排序）；`series`＝每個取樣日（由舊到新，含不合格點），`history` 是其中
+    # qualified 點的 (tᵢ, D)。兩者都是 compute_snapshot 算 history 的同一份
+    # 中間結果，不另外推導。
+    effective: tuple[EffectiveTarget, ...] = ()
+    series: tuple[SeriesPoint, ...] = ()
 
 
 def _dec(x) -> Decimal:
@@ -201,7 +239,7 @@ def _adjusted_price(r: AnalystTargetRecord, splits: list[SplitEvent],
 
 
 def _effective_set(records: Keyed, t: date,
-                   rules: ConsensusRules) -> list[AnalystTargetRecord]:
+                   rules: ConsensusRules) -> Keyed:
     """S(t)：只看 published_on ≤ t（A4）；每個 analyst_key 取最新一筆；過期剔除。
     回傳依 key 排序，讓加總順序也與輸入順序無關。"""
     latest: dict[str, AnalystTargetRecord] = {}
@@ -212,14 +250,14 @@ def _effective_set(records: Keyed, t: date,
         if cur is None or _recency(r) > _recency(cur):
             latest[key] = r
     oldest_valid = _add_months(t, -rules.validity_months)
-    return [latest[k] for k in sorted(latest)
+    return [(k, latest[k]) for k in sorted(latest)
             if latest[k].published_on >= oldest_valid]
 
 
 @dataclass(frozen=True)
 class _DayStats:
     n: int
-    effective: tuple[AnalystTargetRecord, ...] = ()
+    effective_keyed: tuple[tuple[str, AnalystTargetRecord], ...] = ()
     mean: Decimal | None = None
     stdev: Decimal | None = None
     dispersion: Decimal | None = None
@@ -231,15 +269,15 @@ def _day_stats(records: Keyed, splits: list[SplitEvent],
                t: date, rules: ConsensusRules) -> _DayStats:
     """§4.2：以 t 為基準的當日數值；n < 2（樣本）或 n == 0 時不算統計量。"""
     effective = tuple(_effective_set(records, t, rules))
-    prices = [_adjusted_price(r, splits, t) for r in effective]
+    prices = [_adjusted_price(r, splits, t) for _, r in effective]
     n = len(prices)
     min_n = 2 if rules.stdev_kind == "sample" else 1
     if n < min_n:
-        return _DayStats(n=n, effective=effective)
+        return _DayStats(n=n, effective_keyed=effective)
     mean = sum(prices, Decimal(0)) / n
     ss = sum(((p - mean) ** 2 for p in prices), Decimal(0))
     stdev = (ss / (n - 1 if rules.stdev_kind == "sample" else n)).sqrt()
-    return _DayStats(n=n, effective=effective, mean=mean, stdev=stdev,
+    return _DayStats(n=n, effective_keyed=effective, mean=mean, stdev=stdev,
                      dispersion=stdev / mean, high=max(prices), low=min(prices))
 
 
@@ -264,6 +302,42 @@ def _sample_dates(as_of: date, count: int) -> list[date]:
     return out[::-1]
 
 
+def _near_split_ratio(q: Decimal, rules: ConsensusRules) -> Decimal | None:
+    """q（或 1/q）接近哪個常見分割比例；都不接近回 None。"""
+    for ratio in rules.split_ratios:
+        if any(abs(x - ratio) <= ratio * rules.split_ratio_tolerance for x in (q, 1 / q)):
+            return ratio
+    return None
+
+
+def _explained_by_prior(prev: AnalystTargetRecord, nxt: AnalystTargetRecord,
+                        splits: list[SplitEvent], t: date,
+                        rules: ConsensusRules) -> bool:
+    """後一筆自己寫了前值（`prior_target`）→ 前值→後一筆是券商**明確寫的**
+    調整，不是缺分割資訊（LIVE-T2／#399：NVDA Bernstein 400→200、prior=400、
+    Lowers）。只剩「前一筆→前值」這段可能藏著分割，兩種情況算有交代：
+
+    - 前值等於前一筆的原始目標價（相對誤差 ≤ `prior_target_tolerance`）：
+      Yahoo 的前值寫在前一筆當時的基準上（例：AMZN 2022 分割後的 Adjusts
+      紀錄 prior=3125＝前一筆原值）。
+    - 中間漏記了一次調整（NVDA Raymond James 165 →〔漏 291〕→ 323、prior=291）：
+      把前值放到後一筆的基準、以 t 換算後，前一筆→前值不接近任何分割比例。
+
+    `Adjusts`（Yahoo 用來標示「因分割改寫基準」）不算交代——那正是這條
+    啟發式規則要抓的情況。prior_target 只作判斷依據，不進任何平均或標準差。"""
+    if nxt.prior_target is None or _dec(nxt.prior_target) <= 0:
+        return False
+    if (nxt.action or "").strip().casefold() == "adjusts":
+        return False
+    prior = _dec(nxt.prior_target)
+    raw_prev = _dec(prev.target_price)
+    if abs(prior - raw_prev) <= raw_prev * rules.prior_target_tolerance:
+        return True
+    factor = _adjusted_price(nxt, splits, t) / _dec(nxt.target_price)
+    gap = _adjusted_price(prev, splits, t) / (prior * factor)
+    return _near_split_ratio(gap, rules) is None
+
+
 def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
                     rules: ConsensusRules) -> list[str]:
     """評估日 t 的疑似分割：同一 analyst_key（同一券商的同一位分析師）前後
@@ -272,7 +346,8 @@ def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
 
     只看有效期內的配對：已經過期的舊紀錄不在任何 S(t) 裡，多年前的一次
     目標價腰斬不能讓今天變成 `split_unresolved`。歷史取樣點也用同一條規則、
-    以各自的取樣日為 t 判斷（`compute_snapshot()`）。"""
+    以各自的取樣日為 t 判斷（`compute_snapshot()`）。後一筆以自己寫的前值
+    交代了這次調整時不算（`_explained_by_prior()`）。"""
     oldest_valid = _add_months(t, -rules.validity_months)
     by_key: dict[str, list[AnalystTargetRecord]] = {}
     for key, r in records:
@@ -284,16 +359,15 @@ def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
         for prev, nxt in zip(seq, seq[1:]):
             if prev.published_on == nxt.published_on:
                 continue
-            q = _adjusted_price(prev, splits, t) / _adjusted_price(nxt, splits, t)
-            for ratio in rules.split_ratios:
-                if any(abs(x - ratio) <= ratio * rules.split_ratio_tolerance
-                       for x in (q, 1 / q)):
-                    found.append(
-                        f"split_unresolved: {nxt.firm or key} 目標價 "
-                        f"{prev.target_price} → {nxt.target_price}"
-                        f"（{prev.published_on}→{nxt.published_on}）接近"
-                        f" {ratio}:1 分割比例，但缺分割資訊")
-                    break
+            ratio = _near_split_ratio(
+                _adjusted_price(prev, splits, t) / _adjusted_price(nxt, splits, t), rules)
+            if ratio is None or _explained_by_prior(prev, nxt, splits, t, rules):
+                continue
+            found.append(
+                f"split_unresolved: {nxt.firm or key} 目標價 "
+                f"{prev.target_price} → {nxt.target_price}"
+                f"（{prev.published_on}→{nxt.published_on}）接近"
+                f" {ratio}:1 分割比例，但缺分割資訊")
     return found
 
 
@@ -335,19 +409,33 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
     with localcontext(_CTX):
         today = _day_stats(records, splits, as_of, rules)
         history = []
+        series = []
         for t in sample_dates:
             past = _day_stats(records, splits, t, rules)
             # 取樣日自己的有效期內有無法解釋的疑似分割 → D(t) 不可信，不計入。
-            if (past.n >= rules.n_min and past.dispersion is not None
-                    and not _split_suspects(records, splits, t, rules)):
+            if past.n < rules.n_min or past.dispersion is None:
+                reason = "insufficient_analysts"
+            elif _split_suspects(records, splits, t, rules):
+                reason = "split_unresolved"
+            else:
+                reason = None
                 history.append((t, past.dispersion))
+            series.append(SeriesPoint(on=t, n_analysts=past.n, mean=past.mean,
+                                      stdev=past.stdev, dispersion=past.dispersion,
+                                      qualified=reason is None, reason=reason))
+        effective = tuple(
+            EffectiveTarget(analyst_key=key, firm=r.firm, target_price=_dec(r.target_price),
+                            published_on=r.published_on,
+                            adjusted_price=_adjusted_price(r, splits, as_of),
+                            action=r.action, prior_target=r.prior_target)
+            for key, r in today.effective_keyed)
         percentile = None
         if history and today.dispersion is not None:
             percentile = dispersion_percentile([d for _, d in history],
                                                today.dispersion)
         freshness = None
         if today.n:
-            fresh = sum(1 for r in today.effective
+            fresh = sum(1 for _, r in today.effective_keyed
                         if (as_of - r.published_on).days <= rules.freshness_days)
             freshness = Decimal(fresh) / today.n
         suspects = _split_suspects(records, splits, as_of, rules)
@@ -372,7 +460,7 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
     reasons = tuple(r for k in _PRIORITY for r in found[k])
     status = next((k for k in _PRIORITY if found[k]), "ok")
 
-    dates = sorted(r.published_on for r in today.effective)
+    dates = sorted(r.published_on for _, r in today.effective_keyed)
     return ConsensusSnapshot(
         symbol=sym, as_of=as_of, status=status,
         n_analysts=today.n, mean=today.mean, stdev=today.stdev,
@@ -383,7 +471,8 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
         # 偶數筆取較早的中間值，保證是一個真實的發布日
         median_published_on=dates[(len(dates) - 1) // 2] if dates else None,
         coverage=coverage, source=source, rules_version=rules.version,
-        cross_check=cross_check, computed_at=computed_at)
+        cross_check=cross_check, computed_at=computed_at,
+        effective=effective, series=tuple(series))
 
 
 @dataclass(frozen=True)

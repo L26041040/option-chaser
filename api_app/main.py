@@ -40,7 +40,7 @@ from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
 from . import abuse_control, consensus_cache, data_lifecycle, main_account, opportunity_settings
-from . import opportunity_search
+from . import opportunity_search, search_universe
 from .analyst_source import AnalystSource
 from . import (anonymous_lifecycle, chain_backoff, diagnostics, metrics,
               ops_alerts, providers, superuser, vendor_fuse)
@@ -3941,6 +3941,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             stored.opportunity_search if stored else None)
         return consensus_cache.consensus_view(
             _db(), analyst_source, opportunity, ny_today(),
+            rules=_effective_consensus_rules,
+            target_month_rule=_effective_target_month_rule)
+
+    @app.get("/api/opportunity/consensus/{symbol}")
+    def opportunity_consensus_detail(symbol: str) -> dict:
+        """個股共識詳細資料（LIVE-T2／#399）：目前有效的個別券商目標價（原始
+        值、發布日、分割換算後的值）、平均／標準差／D／自身歷史百分位、每月
+        D 序列與合格點數、不合格原因。只讀全站共識快取、不打上游；`item`
+        與共識清單同一份（含依這位使用者門檻的 `gate`）。"""
+        _require_opportunity_role()
+        ticker = symbol.strip().upper()
+        if not search_universe.is_valid_ticker(ticker):
+            raise HTTPException(status_code=400, detail="股票代號格式不正確")
+        stored = _db().get_settings(owner=identity_resolver())
+        opportunity = opportunity_settings.effective(
+            stored.opportunity_search if stored else None)
+        return consensus_cache.detail_view(
+            _db(), analyst_source, ticker, opportunity, ny_today(),
             rules=_effective_consensus_rules,
             target_month_rule=_effective_target_month_rule)
 

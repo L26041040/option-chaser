@@ -290,6 +290,24 @@ class ConsensusSnapshotRecord:
 
 
 @dataclass(frozen=True)
+class ConsensusDetailRecord:
+    """個股共識明細（LIVE-T2／#399）：某 symbol 最新一次成功更新時的有效集合
+    （券商、原始／分割換算後目標價、發布日）與每月歷史序列（每個取樣點的人數、
+    平均、標準差、D、是否合格與原因）。**全站共用、不含 owner**。
+
+    每個 symbol 只留最新一筆（同一次更新與 `ConsensusSnapshotRecord` 一起寫，
+    `as_of`／`source` 相同）；不跨天累積——每日的 point-in-time 稽核紀錄是
+    consensus_snapshots（含合格歷史點），明細大小因此以母體大小為上限。
+    `detail` 是 `api_app.consensus_cache.detail_to_dict()` 的輸出（Decimal
+    存字串）。"""
+    symbol: str
+    as_of: str               # YYYY-MM-DD（美東交易日）
+    source: str
+    detail: dict
+    computed_at: str
+
+
+@dataclass(frozen=True)
 class ConsensusRefreshState:
     """每個 symbol 最後一次向分析師資料來源嘗試的狀態（OS-03／#392）。
 
@@ -976,6 +994,12 @@ class Storage(Protocol):
         """每個 symbol 由 `source` 產生的最新一筆（as_of 最大）。沒有任何
         紀錄的 symbol 不出現在回傳的 dict 裡。一次查完，不逐檔連線。"""
 
+    def save_consensus_detail(self, record: ConsensusDetailRecord) -> None:
+        """覆蓋該 symbol 的明細——per-symbol 只留最新一筆（LIVE-T2／#399）。"""
+
+    def get_consensus_detail(self, symbol: str) -> ConsensusDetailRecord | None:
+        """該 symbol 最新一筆明細；從沒成功更新過回 `None`。"""
+
     def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
         """覆蓋該 symbol 的嘗試狀態——per-symbol 單一狀態。"""
 
@@ -1332,7 +1356,8 @@ class Storage(Protocol):
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
         `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
-        `consensus_snapshots`／`consensus_refresh_state`
+        `consensus_snapshots`／`consensus_refresh_state`／
+        `consensus_details`
         ——這些表結構上沒有 `owner_id` 欄位。
 
         **單一交易內完成**（postgres 無 FK cascade，全部手動

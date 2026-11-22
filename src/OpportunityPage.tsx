@@ -44,10 +44,14 @@ import {
 } from "./api";
 import { strategyLabel } from "./detail";
 import { setAuthStatusCache, subscribeAuthStatus } from "./fetchCache";
+import ConsensusDetailToggle from "./ConsensusDetail";
 import {
   mergeSearchRows,
   opportunityRowKey as rowKey,
   rankOpportunities,
+  ratioPct,
+  reasonText,
+  STATUS_LABELS,
   type OpportunitySort,
 } from "./opportunity";
 import { detailHash, opportunitySettingsHash } from "./route";
@@ -56,15 +60,6 @@ import { roleAtLeast, type Role } from "./superuser";
 
 export const RETURN_DISCLAIMER =
   "此報酬是『分析師平均目標價在目標月份成立時』的條件情境報酬，不是期望值或勝率";
-
-const STATUS_LABELS: Record<string, string> = {
-  insufficient_analysts: "分析師人數不足",
-  insufficient_history: "歷史資料不足",
-  stale: "資料過舊",
-  split_unresolved: "股票分割無法判定",
-  no_data: "無資料",
-  source_error: "來源失敗",
-};
 
 const COVERAGE_LABELS: Record<string, string> = {
   complete: "完整",
@@ -78,17 +73,6 @@ const FAILURE_LABELS: Record<OpportunitySearchFailure["reason"], string> = {
   invalid_month: "目標月份無效",
   analysis_failed: "分析失敗",
 };
-
-/** 0–1 的比例 → 「9.0%」。 */
-function ratioPct(x: number | null): string {
-  return x === null ? "—" : `${(x * 100).toFixed(1)}%`;
-}
-
-/** 後端原因字串是「代碼: 說明」——畫面只要說明那一半。 */
-function reasonText(reason: string): string {
-  const at = reason.indexOf(": ");
-  return at >= 0 ? reason.slice(at + 2) : reason;
-}
 
 function expiryDistance(bufferDays: number): string {
   if (bufferDays === 0) return "與目標月份同日到期";
@@ -382,6 +366,7 @@ function ConfiguredBody({
             {selected.map((item) => (
               <li key={item.symbol} aria-label={item.symbol} className="opp-item">
                 <ItemSummary item={item} />
+                <ConsensusDetailToggle symbol={item.symbol} />
               </li>
             ))}
           </ul>
@@ -664,6 +649,7 @@ function NotSelected({
                 <li key={i}>{r}</li>
               ))}
             </ul>
+            <ConsensusDetailToggle symbol={item.symbol} />
           </li>
         ))}
       </ul>

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from ..clock import now_utc_iso
 from . import (RevokedCredential, identity_token_hash, require_tombstone_reason, RETIRED_TABLES, SCENARIO_CHILD_TABLES, BrowserIdentity,
                ResolvedCredential,
-               ChainBackoffEntry, ConsensusRefreshState,
+               ChainBackoffEntry, ConsensusDetailRecord, ConsensusRefreshState,
                ConsensusSnapshotRecord, ContractHistory,
                DataSourceSettings, DividendCacheEntry, Feedback, IvBackfillRun,
                IvObservation, LineageReport, MetricEntry, Owner,
@@ -65,6 +65,7 @@ class MemoryStorage:
         # OS-03（#392）：分析師共識快取——鍵 (symbol, as_of)／symbol。
         self._consensus_snapshots: dict[tuple[str, str], ConsensusSnapshotRecord] = {}
         self._consensus_refresh_state: dict[str, ConsensusRefreshState] = {}
+        self._consensus_details: dict[str, ConsensusDetailRecord] = {}   # LIVE-T2／#399
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
         # PB-01（#292，Anonymous Public Beta）：owner registry ＋
@@ -350,6 +351,12 @@ class MemoryStorage:
             if symbol not in out or as_of > out[symbol].as_of:
                 out[symbol] = rec
         return out
+
+    def save_consensus_detail(self, record: ConsensusDetailRecord) -> None:
+        self._consensus_details[record.symbol] = record
+
+    def get_consensus_detail(self, symbol: str) -> ConsensusDetailRecord | None:
+        return self._consensus_details.get(symbol)
 
     def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
         self._consensus_refresh_state[state.symbol] = state
