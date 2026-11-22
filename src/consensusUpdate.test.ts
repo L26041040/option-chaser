@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import type { ConsensusRefreshSymbol } from "./api";
-import { formatWait, isFailed, progressText, retryGate } from "./consensusUpdate";
+import consensusSample from "../contracts/opportunity_consensus_sample.json";
+import statusSample from "../contracts/opportunity_consensus_status_sample.json";
+import type {
+  ConsensusRefreshStatusResponse,
+  ConsensusRefreshSymbol,
+  OpportunityConsensusResponse,
+} from "./api";
+import {
+  builtCount,
+  dataPhase,
+  formatWait,
+  isFailed,
+  nextAutoUpdate,
+  progressText,
+  retryGate,
+} from "./consensusUpdate";
+
+const CONSENSUS = consensusSample as unknown as OpportunityConsensusResponse;
+const STATUS = statusSample as unknown as ConsensusRefreshStatusResponse;
 
 const NOW = Date.parse("2026-09-28T13:00:00Z");
 
@@ -30,14 +47,92 @@ describe("retryGate", () => {
 
   it("重試用完、別人正在處理、今天已成功：停用並說明", () => {
     expect(retryGate(sym({ state: "exhausted" }), NOW).reason)
-      .toBe("今天的重試次數已用完，下一個交易日自動再試");
+      .toBe("今天的重試次數已用完，明天自動更新");
     expect(retryGate(sym({ state: "in_progress" }), NOW).reason)
       .toBe("另一個更新正在處理這一檔");
     expect(retryGate(sym({ state: "done" }), NOW).enabled).toBe(false);
   });
 
+  it("用完時依美東日期說「明天」或「下週一」自動更新", () => {
+    expect(retryGate(sym({ state: "exhausted" }), NOW, { today: "2026-09-25" }).reason)
+      .toBe("今天的重試次數已用完，下週一自動更新");
+  });
+
+  it("今日上游呼叫已達每日上限：失敗與待更新的都停用，說明明天自動更新", () => {
+    const cap = { capReached: true, today: "2026-09-28" };
+    for (const state of ["retry_ready", "cooling", "pending"] as const) {
+      expect(retryGate(sym({ state, next_retry_at: null }), NOW, cap)).toEqual({
+        enabled: false, remainingSeconds: null,
+        reason: "今日上游呼叫已達每日上限，明天自動更新" });
+    }
+  });
+
   it("讀不懂的時間視同到期，不把按鈕永久鎖住", () => {
     expect(retryGate(sym({ next_retry_at: "garbage" }), NOW).enabled).toBe(true);
+  });
+});
+
+describe("nextAutoUpdate（排程只在平日跑）", () => {
+  it("明天是平日：明天；明天是週末：下週一", () => {
+    expect(nextAutoUpdate("2026-09-28")).toBe("明天自動更新");   // 週一
+    expect(nextAutoUpdate("2026-09-24")).toBe("明天自動更新");   // 週四
+    expect(nextAutoUpdate("2026-09-25")).toBe("下週一自動更新"); // 週五
+    expect(nextAutoUpdate("2026-09-26")).toBe("下週一自動更新"); // 週六
+    expect(nextAutoUpdate("2026-09-27")).toBe("明天自動更新");   // 週日
+  });
+
+  it("沒有日期或讀不懂：照樣說明天", () => {
+    expect(nextAutoUpdate(undefined)).toBe("明天自動更新");
+    expect(nextAutoUpdate("garbage")).toBe("明天自動更新");
+  });
+});
+
+const noFailures: ConsensusRefreshStatusResponse = {
+  ...STATUS, upstream_calls_today: 10,
+  progress: { ...STATUS.progress, failed: 0, pending: 0 },
+  symbols: STATUS.symbols.map((s) => ({ ...s, state: "done", error: null })),
+};
+const withUniverse = (over: Partial<OpportunityConsensusResponse["universe"]>,
+                      items = CONSENSUS.items): OpportunityConsensusResponse =>
+  ({ ...CONSENSUS, universe: { ...CONSENSUS.universe, ...over }, items });
+
+describe("dataPhase：就緒／建立中／失敗／已達上限", () => {
+  it("全部建立、沒有失敗：就緒", () => {
+    expect(dataPhase(withUniverse({ not_built: 0 }), noFailures)).toEqual({ kind: "ready" });
+  });
+
+  it("還有沒建立的：建立中（失敗也照樣先算建立中）", () => {
+    expect(dataPhase(withUniverse({ not_built: 2 }), STATUS)).toEqual({ kind: "building" });
+  });
+
+  it("都建立了但有失敗的股票：失敗，帶失敗檔數", () => {
+    expect(dataPhase(withUniverse({ not_built: 0 }), STATUS)).toEqual({ kind: "failed", failed: 1 });
+  });
+
+  it("今日上游呼叫已達上限、還有沒做完的：已達上限（優先於建立中）", () => {
+    const capped = { ...STATUS, upstream_calls_today: 400 };
+    expect(dataPhase(withUniverse({ not_built: 2 }), capped))
+      .toEqual({ kind: "capped", calls: 400, cap: 400 });
+  });
+
+  it("已達上限但今天都做完了：就緒（上限不影響已有資料）", () => {
+    expect(dataPhase(withUniverse({ not_built: 0 }), { ...noFailures, upstream_calls_today: 400 }))
+      .toEqual({ kind: "ready" });
+  });
+
+  it("狀態還沒讀到：只看共識清單", () => {
+    expect(dataPhase(withUniverse({ not_built: 1 }), null)).toEqual({ kind: "building" });
+    expect(dataPhase(withUniverse({ not_built: 0 }), null)).toEqual({ kind: "ready" });
+  });
+});
+
+describe("builtCount", () => {
+  it("扣掉還沒建立與抓取失敗（source_error）的；只有共識值（no_data）也算已建立", () => {
+    // 樣本 7 檔：GGG source_error，其餘 6 檔都已建立。
+    expect(builtCount(CONSENSUS)).toBe(6);
+    const notBuilt = CONSENSUS.items.map((i) => i.symbol === "AAA"
+      ? { ...i, status: "no_data" as const, reasons: ["no_data: 尚未更新"] } : i);
+    expect(builtCount({ ...CONSENSUS, items: notBuilt })).toBe(5);
   });
 });
 

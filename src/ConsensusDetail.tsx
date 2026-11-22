@@ -27,7 +27,9 @@ type Load =
   | { state: "error"; message: string }
   | { state: "ok"; data: OpportunityConsensusDetail };
 
-export default function ConsensusDetailToggle({ symbol }: { symbol: string }) {
+/** 打開／收起與讀取（LIVE-T5／#401 起，搜尋結果列也用同一套：按鈕與明細
+ *  分開放在表格的兩列裡）。 */
+export function useConsensusDetail(symbol: string) {
   const [open, setOpen] = useState(false);
   const [load, setLoad] = useState<Load | null>(null);
   const ctrl = useRef<AbortController | null>(null);
@@ -50,27 +52,46 @@ export default function ConsensusDetailToggle({ symbol }: { symbol: string }) {
       });
   }
 
+  return { open, load, toggle, panelId };
+}
+
+export type ConsensusDetailState = ReturnType<typeof useConsensusDetail>;
+
+/** 明細本體；收起或還沒讀時不渲染。 */
+export function ConsensusDetailPanel({
+  symbol, detail,
+}: {
+  symbol: string;
+  detail: ConsensusDetailState;
+}) {
+  const { open, load, panelId } = detail;
+  if (!open || load === null) return null;
+  return (
+    <section id={panelId} className="opp-detail-panel" aria-label={`${symbol} 共識明細`}>
+      {load.state === "loading" && <p className="caption">載入中……</p>}
+      {load.state === "error" && (
+        <div className="notice error" role="alert">{load.message}</div>
+      )}
+      {load.state === "ok" && <DetailBody data={load.data} />}
+    </section>
+  );
+}
+
+export default function ConsensusDetailToggle({ symbol }: { symbol: string }) {
+  const detail = useConsensusDetail(symbol);
   return (
     <div className="opp-detail">
       <button
         type="button"
         className="pbtn sm line opp-detail-toggle"
         aria-label={`${symbol} 詳細資料`}
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={toggle}
+        aria-expanded={detail.open}
+        aria-controls={detail.panelId}
+        onClick={detail.toggle}
       >
-        {open ? "收起詳細資料" : "詳細資料"}
+        {detail.open ? "收起詳細資料" : "詳細資料"}
       </button>
-      {open && load !== null && (
-        <section id={panelId} className="opp-detail-panel" aria-label={`${symbol} 共識明細`}>
-          {load.state === "loading" && <p className="caption">載入中……</p>}
-          {load.state === "error" && (
-            <div className="notice error" role="alert">{load.message}</div>
-          )}
-          {load.state === "ok" && <DetailBody data={load.data} />}
-        </section>
-      )}
+      <ConsensusDetailPanel symbol={symbol} detail={detail} />
     </div>
   );
 }
