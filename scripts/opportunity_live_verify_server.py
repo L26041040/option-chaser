@@ -31,6 +31,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,7 +41,11 @@ from scripts.opportunity_verify_server import (  # noqa: E402
     STATS as GUARD_STATS, assert_local_dsn, install_network_guard)
 
 _lock = threading.Lock()
-STATS = {"analyst_fetches": 0, "chain_attempts": {}, "chain_sources": {}}
+STATS = {"analyst_fetches": 0, "analyst_http_requests": 0, "chain_attempts": {},
+         "chain_sources": {}}
+# 逐次記錄（LIVE-T6／#402 驗收報告用）：每次抓鏈 attempt 與每次分析師抓取。
+CHAIN_LOG: list[dict] = []
+ANALYST_LOG: list[dict] = []
 
 
 def _count(bucket: str, key: str) -> None:
@@ -59,15 +64,39 @@ def build_app(*, storage, nonce: str, label: str):
     from option_chaser.consensus import ConsensusRules
     from option_chaser.data import cboe as cboe_module
     from option_chaser.data import yf as yf_module
-    from option_chaser.data.yahoo_analyst import FIRM_ALIASES
+    from option_chaser.data.yahoo_analyst import FIRM_ALIASES, UrllibTransport
 
     def observed(name, fn):
         def fetch(symbol):
             _count("chain_attempts", name)
-            snap = fn(symbol)
+            t0 = time.monotonic()
+            started = time.time()
+            try:
+                snap = fn(symbol)
+            except Exception as e:  # noqa: BLE001 — 照原樣往外拋，只記錄
+                with _lock:
+                    CHAIN_LOG.append({"symbol": symbol, "attempt": name, "ok": False,
+                                      "started": started,
+                                      "seconds": round(time.monotonic() - t0, 2),
+                                      "error": f"{type(e).__name__}: {e}"[:300]})
+                raise
             _count("chain_sources", snap.source)
+            with _lock:
+                CHAIN_LOG.append({"symbol": symbol, "attempt": name, "ok": True,
+                                  "started": started,
+                                  "seconds": round(time.monotonic() - t0, 2),
+                                  "source": snap.source, "spot": snap.spot,
+                                  "fetched_at": snap.fetched_at,
+                                  "contracts": len(snap.contracts),
+                                  "expiries": len({c.expiry for c in snap.contracts})})
             return snap
         return fetch
+
+    class CountingTransport(UrllibTransport):
+        def get(self, url):
+            with _lock:
+                STATS["analyst_http_requests"] += 1
+            return super().get(url)
 
     yf_module.fetch_chain = observed("yfinance", yf_module.fetch_chain)
 
@@ -75,11 +104,24 @@ def build_app(*, storage, nonce: str, label: str):
         def fetch(self, symbol, today):
             with _lock:
                 STATS["analyst_fetches"] += 1
-            return super().fetch(symbol, today)
+            t0 = time.monotonic()
+            try:
+                out = super().fetch(symbol, today)
+            except Exception as e:  # noqa: BLE001
+                with _lock:
+                    ANALYST_LOG.append({"symbol": symbol, "ok": False,
+                                        "seconds": round(time.monotonic() - t0, 2),
+                                        "error": f"{type(e).__name__}: {e}"[:300]})
+                raise
+            with _lock:
+                err = getattr(out, "error", None)
+                ANALYST_LOG.append({"symbol": symbol, "ok": err is None, "error": err,
+                                    "seconds": round(time.monotonic() - t0, 2)})
+            return out
 
     api = create_app(
         storage=storage,
-        analyst_source=CountingYahoo(),
+        analyst_source=CountingYahoo(CountingTransport()),
         consensus_rules=ConsensusRules(aliases=FIRM_ALIASES),
         consensus_refresh_policy=consensus_cache.RefreshPolicy.from_env(),
         cboe_fetch=observed("cboe", cboe_module.fetch_chain),
@@ -102,6 +144,8 @@ def build_app(*, storage, nonce: str, label: str):
         if scope["type"] == "http" and scope["path"] == "/__verify/stats":
             with _lock:
                 body = {"analyst_fetches": STATS["analyst_fetches"],
+                        "analyst_http_requests": STATS["analyst_http_requests"],
+                        "chain_log": list(CHAIN_LOG), "analyst_log": list(ANALYST_LOG),
                         "chain_attempts": dict(STATS["chain_attempts"]),
                         "chain_sources": dict(STATS["chain_sources"]),
                         "blocked_connections": GUARD_STATS["blocked_connections"],
