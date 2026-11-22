@@ -708,3 +708,86 @@ def test_adjusted_and_raw_records_agree_after_the_split_too():
                                 split_adjusted_through=date(2026, 8, 3)), other],
                            [split], date(2026, 8, 31), rules)
     assert raw.mean == adj.mean == Decimal("152.5")
+
+
+# --- 週線收盤排除疑似分割（weekly_closes） -----------------------------------
+# 收盤＝來源已調整全部已知分割的週線。來源不知道的分割會在收盤上留下一週
+# 約 r 倍的跳動；收盤平穩且完整覆蓋兩筆之間時，跳動是真的調整。
+
+def _fridays(start: date, end: date):
+    d = start
+    while d <= end:
+        yield d
+        d = date.fromordinal(d.toordinal() + 7)
+
+
+def _closes(*, drop_on: date | None = None, skip=(), until=date(2026, 11, 13)):
+    """2026-02-27 起每週五一個收盤，100 元；drop_on 當週起變 50（來源沒記錄
+    的 2:1 分割）；skip 範圍內的週沒有收盤。"""
+    out = []
+    for d in _fridays(date(2026, 2, 27), until):
+        if any(a <= d <= b for a, b in skip):
+            continue
+        out.append((d, Decimal(50 if drop_on is not None and d >= drop_on else 100)))
+    return out
+
+
+def _halving(**nxt_fields):
+    later = replace(rec("Jumper", 100, date(2026, 11, 3)), **nxt_fields)
+    return (good_history() + today_records()
+            + [rec("Jumper", 200, date(2026, 3, 2)), later])
+
+
+def test_halving_with_flat_full_weekly_closes_is_a_real_cut_not_a_split():
+    snap = compute_snapshot(_halving(), [], AS_OF, weekly_closes=_closes())
+    assert "split_unresolved" not in statuses(snap)
+    assert compute_snapshot(_halving(), [], AS_OF).status == "split_unresolved"   # 沒給收盤：照舊
+
+
+def test_unrecorded_split_still_shows_as_a_one_week_price_halving():
+    closes = _closes(drop_on=date(2026, 6, 19))      # 某一週收盤腰斬
+    snap = compute_snapshot(_halving(), [], AS_OF, weekly_closes=closes)
+    assert snap.status == "split_unresolved"
+    assert "Jumper" in snap.reasons[0]
+
+
+def test_gap_in_the_weekly_closes_keeps_the_conservative_flag():
+    closes = _closes(skip=[(date(2026, 6, 5), date(2026, 6, 19))])   # 缺 3 週
+    snap = compute_snapshot(_halving(), [], AS_OF, weekly_closes=closes)
+    assert snap.status == "split_unresolved"
+
+
+def test_closes_after_the_evaluation_date_are_not_used():
+    # 11-03 那筆之後的第一個收盤是 11-06：評估日 11-04 還看不到 → 覆蓋不足。
+    early = compute_snapshot(_halving(), [], date(2026, 11, 4), weekly_closes=_closes())
+    assert early.status == "split_unresolved"
+    later = compute_snapshot(_halving(), [], AS_OF, weekly_closes=_closes())
+    assert "split_unresolved" not in statuses(later)
+
+
+def test_adjusts_records_are_never_explained_by_prices():
+    snap = compute_snapshot(_halving(action="Adjusts"), [], AS_OF,
+                            weekly_closes=_closes())
+    assert snap.status == "split_unresolved"
+
+
+def test_weekly_move_threshold_is_half_the_log_split_ratio_and_configurable():
+    # 2:1 → 門檻 ln2／2 ≈ 0.347：一週 −25%（|ln 0.75| ≈ 0.288）不擋；−35%（0.431）擋
+    def snap(drop, rules=ConsensusRules()):
+        closes = [(d, c if c == 100 else Decimal(drop)) for d, c in
+                  _closes(drop_on=date(2026, 6, 19))]
+        return compute_snapshot(_halving(), [], AS_OF, rules, weekly_closes=closes)
+    assert "split_unresolved" not in statuses(snap(75))
+    assert snap(65).status == "split_unresolved"
+    strict = ConsensusRules(split_price_move_share=Decimal("0.3"))   # 門檻 ≈ 0.208
+    assert snap(75, strict).status == "split_unresolved"
+
+
+def test_prices_cannot_clear_a_jump_next_to_a_split_the_source_already_knows():
+    # 已知的 2:1（06-15）在收盤上早已被調整掉，收盤平穩不代表沒事：分割後
+    # 隔天仍用舊基準寫 200、再改 100（AVGO Cantor 2024-07 這類基準錯誤）照舊抓。
+    split = SplitEvent(symbol="XYZ", effective_on=date(2026, 6, 15), ratio=Decimal(2))
+    records = today_records() + [rec("Jumper", 200, date(2026, 6, 16)),
+                                 rec("Jumper", 100, date(2026, 6, 18))]
+    snap = compute_snapshot(records, [split], AS_OF, weekly_closes=_closes())
+    assert any("Jumper" in r for r in snap.reasons)

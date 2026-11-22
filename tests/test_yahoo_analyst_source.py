@@ -79,6 +79,19 @@ def test_split_calendar_comes_from_the_free_chart_events():
     assert no_split.splits == ()
 
 
+def test_weekly_closes_are_passed_on_dated_by_when_the_close_is_known():
+    # Yahoo 週線以週一標記、收盤是當週最後一個交易日：AVGO 標 2024-07-15 的
+    # 那根（157.35，分割當週）要到 07-19 才可得；最後一根（週末抓取時 Yahoo
+    # 補的 11-20 週五最新價）照原標記。共 784 根，與 chart 回應相同。
+    result, _ = _fetch("AVGO")
+    closes = dict(result.weekly_closes)
+    assert len(result.weekly_closes) == 784
+    assert date(2024, 7, 15) not in closes
+    assert round(closes[date(2024, 7, 19)], 2) == Decimal("157.35")
+    assert [d for d, _ in result.weekly_closes[-2:]] == [date(2026, 11, 20)] * 2
+    assert all(d.weekday() == 4 for d, _ in result.weekly_closes)
+
+
 # --- 分割基準：Yahoo 的目標價有些已換成分割後的數字、有些沒有 ---------------
 
 def _record(result, firm, published_on):

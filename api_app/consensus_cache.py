@@ -292,7 +292,8 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
         snap = consensus.compute_snapshot(
             result.records, result.splits, today, rules, symbol=symbol,
             coverage=result.coverage, source=source.name,
-            cross_check=result.cross_check, computed_at=at)
+            cross_check=result.cross_check, computed_at=at,
+            weekly_closes=result.weekly_closes)
         storage.save_consensus_snapshot(ConsensusSnapshotRecord(
             symbol=symbol, as_of=day, source=source.name,
             is_fixture=bool(source.is_fixture), snapshot=snapshot_to_dict(snap),

@@ -31,7 +31,8 @@ from typing import Protocol
 from option_chaser.consensus import (AnalystTargetRecord, ConsensusCrossCheck,
                                      SplitEvent)
 from option_chaser.data.yahoo_analyst import (YahooClient, YahooError,
-                                              YahooSymbolData, split_basis_through)
+                                              YahooSymbolData, closes_by_close_date,
+                                              split_basis_through)
 
 COVERAGES = ("complete", "partial", "unknown")
 
@@ -50,6 +51,9 @@ class ProviderResult:
     # 秒數（沒給＝`None`）。更新核心據此決定下次可重試時間，不解析 `error` 文字。
     rate_limited: bool = False
     retry_after: int | None = None
+    # 疑似分割的價格佐證（`compute_snapshot(weekly_closes=)`）：(收盤可得日,
+    # 已調整全部已知分割的週線收盤)。`None`＝來源沒有股價，引擎維持保守判斷。
+    weekly_closes: tuple[tuple[date, Decimal], ...] | None = None
 
     def __post_init__(self) -> None:
         if self.coverage not in COVERAGES:
@@ -124,6 +128,8 @@ class YahooAnalystSource:
       混著分割前／後兩種基準，見 `split_basis_through`）。
     - Yahoo 沒有「終止覆蓋」事件 → `coverage` 一律 `partial`（研究已確認）。
     - `financialData` 的共識平均／人數只進 `cross_check`（L9）。
+    - 同一次 chart 呼叫已拿到的週線收盤（改標成收盤可得日）一併帶出，供引擎
+      排除疑似分割的誤判；不多打任何上游。
     - 失敗收斂成 `ProviderResult(error=...)`，不丟例外。
     """
 
@@ -165,7 +171,8 @@ class YahooAnalystSource:
                                     ratio=s.ratio) for s in data.splits),
             coverage="partial",
             history_from=min((r.published_on for r in records), default=None),
-            cross_check=cross)
+            cross_check=cross,
+            weekly_closes=closes_by_close_date(data.weekly_closes))
 
 
 ANALYST_SOURCE_ENV = "OC_ANALYST_SOURCE"

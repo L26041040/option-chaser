@@ -12,10 +12,11 @@ Decimal context 無關，同一輸入永遠得到同一輸出。浮點輸入（�
 from __future__ import annotations
 
 import calendar
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Context, Decimal, localcontext
-from typing import Iterable, Literal, Mapping
+from typing import Iterable, Literal, Mapping, Sequence
 
 EPSILON = Decimal("1e-9")
 _CTX = Context(prec=28)
@@ -63,12 +64,18 @@ class ConsensusRules:
     split_ratio_tolerance: Decimal = Decimal("0.03")
     # LIVE-T2（#399）：後一筆的 prior_target 等於前一筆原始目標價的相對誤差
     prior_target_tolerance: Decimal = Decimal("0.01")
-    version: str = "provisional-399"
+    # 週線收盤排除疑似分割（`compute_snapshot(weekly_closes=)`）：收盤已調整
+    # 所有來源知道的分割，所以「缺分割資訊」的分割仍會在收盤上留下一週的跳動。
+    # 兩筆之間任一週 |ln(收盤比)| ≥ split_price_move_share × |ln r| → 不能排除；
+    # 收盤相鄰兩點（含兩端）相隔超過 split_price_max_gap_days 天 → 覆蓋不足、不排除。
+    split_price_move_share: Decimal = Decimal("0.5")
+    split_price_max_gap_days: int = 10
+    version: str = "provisional-split-price"
 
     def __post_init__(self) -> None:
         # 允許呼叫端傳 float／int；內部一律 Decimal
         for name in ("freshness_min_share", "split_ratio_tolerance",
-                     "prior_target_tolerance"):
+                     "prior_target_tolerance", "split_price_move_share"):
             object.__setattr__(self, name, _dec(getattr(self, name)))
         object.__setattr__(self, "split_ratios",
                            tuple(_dec(r) for r in self.split_ratios))
@@ -82,6 +89,10 @@ class ConsensusRules:
             raise ValueError("validity_months 必須 ≥ 1、freshness_days 必須 ≥ 0")
         if not Decimal(0) <= self.freshness_min_share <= Decimal(1):
             raise ValueError("freshness_min_share 必須介於 0–1")
+        if not Decimal(0) < self.split_price_move_share <= Decimal(1):
+            raise ValueError("split_price_move_share 必須介於 0（不含）–1")
+        if self.split_price_max_gap_days < 1:
+            raise ValueError("split_price_max_gap_days 必須 ≥ 1")
 
 
 @dataclass(frozen=True)
@@ -338,8 +349,50 @@ def _explained_by_prior(prev: AnalystTargetRecord, nxt: AnalystTargetRecord,
     return _near_split_ratio(gap, rules) is None
 
 
+Closes = Sequence[tuple[date, Decimal]]   # (收盤可得日, 分割調整後收盤)，時間遞增
+
+
+def _explained_by_prices(prev: AnalystTargetRecord, nxt: AnalystTargetRecord,
+                         ratio: Decimal, closes: Closes | None,
+                         splits: list[SplitEvent], rules: ConsensusRules) -> bool:
+    """週線收盤證明兩筆之間沒有分割 → 這次跳動是真的調整（AMD Piper Sandler
+    300→600、INTC Evercore ISI 45→131：兩檔都沒有分割）。
+
+    來源的收盤已調整它知道的每一次分割；我們缺分割資訊、來源收盤卻沒調整的
+    那次分割，會在收盤上留下一週約 r 倍的跳動。兩個條件都成立才算排除：
+
+    - 覆蓋：有一個收盤在 prev 發布日當天或之前、有一個在 nxt 發布日當天或
+      之後，中間相鄰收盤（含與兩個發布日的距離）都不超過
+      `split_price_max_gap_days` 天。
+    - 沒有任何一週 |ln(收盤比)| ≥ `split_price_move_share` × |ln r|。
+    - 這段收盤期間沒有**已知**分割：收盤早已把已知分割調整掉，看不出「分割
+      後仍用舊基準寫」這類錯誤（AVGO Cantor 2024-07-16 2000 → 隔天 200）。
+
+    `closes` 只含評估日 t（含）以前可得的收盤（呼叫端已篩，不用未來資訊）。
+    `Adjusts`（Yahoo 標示「因分割改寫基準」）一律不排除，與前值規則一致。"""
+    if closes is None or (nxt.action or "").strip().casefold() == "adjusts":
+        return False
+    start, end = prev.published_on, nxt.published_on
+    first = max((i for i, (d, _) in enumerate(closes) if d <= start), default=None)
+    last = min((i for i, (d, _) in enumerate(closes) if d >= end), default=None)
+    if first is None or last is None:
+        return False
+    window = closes[first:last + 1]
+    if any(window[0][0] <= s.effective_on <= window[-1][0] for s in splits):
+        return False
+    gap = rules.split_price_max_gap_days
+    if (start - window[0][0]).days > gap or (window[-1][0] - end).days > gap:
+        return False
+    limit = float(rules.split_price_move_share) * abs(math.log(float(ratio)))
+    for (d0, c0), (d1, c1) in zip(window, window[1:]):
+        if (d1 - d0).days > gap or abs(math.log(float(c1) / float(c0))) >= limit:
+            return False
+    return True
+
+
 def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
-                    rules: ConsensusRules) -> list[str]:
+                    rules: ConsensusRules,
+                    closes: Closes | None = None) -> list[str]:
     """評估日 t 的疑似分割：同一 analyst_key（同一券商的同一位分析師）前後
     兩筆、**兩筆都落在有效期 V 內**（published_on ∈ [t − V, t]），套用以 t
     為基準的已知分割後，比值仍接近常見分割比例 → 疑似有分割但缺分割資訊。
@@ -347,7 +400,10 @@ def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
     只看有效期內的配對：已經過期的舊紀錄不在任何 S(t) 裡，多年前的一次
     目標價腰斬不能讓今天變成 `split_unresolved`。歷史取樣點也用同一條規則、
     以各自的取樣日為 t 判斷（`compute_snapshot()`）。後一筆以自己寫的前值
-    交代了這次調整時不算（`_explained_by_prior()`）。"""
+    交代了這次調整時不算（`_explained_by_prior()`）；週線收盤證明兩筆之間
+    沒有分割時也不算（`_explained_by_prices()`，`closes` 為 None＝不使用）。"""
+    if closes is not None:
+        closes = [(d, c) for d, c in closes if d <= t]     # 只用 t 以前可得的收盤
     oldest_valid = _add_months(t, -rules.validity_months)
     by_key: dict[str, list[AnalystTargetRecord]] = {}
     for key, r in records:
@@ -361,7 +417,8 @@ def _split_suspects(records: Keyed, splits: list[SplitEvent], t: date,
                 continue
             ratio = _near_split_ratio(
                 _adjusted_price(prev, splits, t) / _adjusted_price(nxt, splits, t), rules)
-            if ratio is None or _explained_by_prior(prev, nxt, splits, t, rules):
+            if (ratio is None or _explained_by_prior(prev, nxt, splits, t, rules)
+                    or _explained_by_prices(prev, nxt, ratio, closes, splits, rules)):
                 continue
             found.append(
                 f"split_unresolved: {nxt.firm or key} 目標價 "
@@ -390,15 +447,24 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
                      coverage: str = "unknown",
                      source: str = "",
                      cross_check: ConsensusCrossCheck | None = None,
-                     computed_at: datetime | None = None) -> ConsensusSnapshot:
+                     computed_at: datetime | None = None,
+                     weekly_closes: Iterable[tuple[date, Decimal]] | None = None,
+                     ) -> ConsensusSnapshot:
     """§4.1–4.3：一檔股票在評估日 as_of 的 Consensus Snapshot。
 
     只用 published_on ≤ as_of 的紀錄、effective_on ≤ as_of 的分割（A4）。
     `cross_check` 只原樣帶進 Snapshot，不參與計算（L9）。純函式：不讀時鐘，
     `computed_at` 由呼叫端提供。
+
+    `weekly_closes`：來源的週線收盤 (收盤可得日, 已調整全部已知分割的收盤)。
+    提供時，疑似分割的配對若在收盤上看不到對應的一週跳動就不算疑似分割
+    （`_explained_by_prices()`）；每個評估日只用當天以前可得的收盤。`None`
+    （預設）＝不使用，行為與先前完全相同。
     """
     rules = rules or ConsensusRules()
     records = list(records)
+    closes = (None if weekly_closes is None
+              else sorted((d, _dec(c)) for d, c in weekly_closes if _dec(c) > 0))
     splits = sorted(splits, key=lambda s: (s.effective_on, s.ratio))
     sym = _resolve_symbol(records, splits, symbol)
     # 只有評級、沒有目標價的紀錄一律丟棄（§2）
@@ -415,7 +481,7 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
             # 取樣日自己的有效期內有無法解釋的疑似分割 → D(t) 不可信，不計入。
             if past.n < rules.n_min or past.dispersion is None:
                 reason = "insufficient_analysts"
-            elif _split_suspects(records, splits, t, rules):
+            elif _split_suspects(records, splits, t, rules, closes):
                 reason = "split_unresolved"
             else:
                 reason = None
@@ -438,7 +504,7 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
             fresh = sum(1 for _, r in today.effective_keyed
                         if (as_of - r.published_on).days <= rules.freshness_days)
             freshness = Decimal(fresh) / today.n
-        suspects = _split_suspects(records, splits, as_of, rules)
+        suspects = _split_suspects(records, splits, as_of, rules, closes)
 
     found: dict[str, list[str]] = {k: [] for k in _PRIORITY}
     if not any(r.published_on <= as_of for _, r in records):

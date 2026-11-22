@@ -205,3 +205,25 @@ def test_opportunity_detail_sample_matches_the_live_response():
     assert sample_path.exists(), "請跑 scripts/gen_opportunity_detail_sample.py"
     assert json.loads(sample_path.read_text(encoding="utf-8")) == build_sample(), (
         "scripts/gen_opportunity_detail_sample.py 重產，並確認前端 mock 跟著更新")
+
+
+def test_daily_refresh_uses_the_fetched_weekly_closes_to_clear_false_split_flags(monkeypatch):
+    # AMD Piper Sandler 300 → 600、INTC Evercore ISI 45 → 131：沒有分割，週線
+    # 也沒有對應的跳動。每日更新把同一次抓到的收盤交給引擎（不多打上游）。
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 11, 22))
+    storage = MemoryStorage()
+    transport = ReplayTransport()
+    client = _client(storage, YahooAnalystSource(transport=transport))
+    r = client.put("/api/settings", json={
+        "market_data": _DEFAULT, "historical_iv": _DEFAULT,
+        "opportunity_search": {"universe_id": "custom",
+                               "custom_symbols": ["AMD", "INTC"]}})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/cron/consensus-refresh", headers=CRON).status_code == 200
+    assert sum("/chart/AMD" in u for u in transport.calls) == 1     # 不多打上游
+    reader = _client(storage, NoUpstream())
+    for symbol in ("AMD", "INTC"):
+        body = _detail(reader, symbol)
+        assert body["item"]["status"] == "ok", body["item"]["gate"]["reasons"]
+        assert body["item"]["rules_version"] == "provisional-split-price"
+        assert not [p for p in body["series"] if p["reason"] == "split_unresolved"]

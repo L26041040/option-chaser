@@ -267,6 +267,25 @@ def split_basis_through(target: RawTarget, splits, weekly_closes) -> date | None
     return later[best_k - 1].effective_on if best_k else None
 
 
+_WEEK_CLOSE_OFFSET_DAYS = 4      # 週一標記的週線，收盤是當週最後一個交易日（≤ 週五）
+
+
+def closes_by_close_date(weekly_closes) -> tuple[tuple[date, Decimal], ...]:
+    """週線收盤改標成「收盤可得日」，給共識引擎的 `weekly_closes` 用（不用未來資訊）。
+
+    Yahoo 的週線以**當週週一**標記，收盤卻是當週最後一個交易日的價格；照原
+    標記篩「t 以前」會偷看到 t 之後最多 4 天的收盤。改成標記日 + 4 天（週五），
+    但不晚於下一根的標記日。最後一根照原標記（Yahoo 把最新價放在最新交易日，
+    例：週末抓取時多出一根週五標記的收盤）。"""
+    out = []
+    for i, (d, c) in enumerate(weekly_closes):
+        if i + 1 < len(weekly_closes):
+            nxt = weekly_closes[i + 1][0]
+            d = min(date.fromordinal(d.toordinal() + _WEEK_CLOSE_OFFSET_DAYS), nxt)
+        out.append((d, c))
+    return tuple(out)
+
+
 def _close_on_or_before(weekly_closes, day: date) -> Decimal | None:
     best = None
     for d, c in weekly_closes:

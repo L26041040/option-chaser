@@ -5,7 +5,7 @@
     "dispersion_max": 10.0
   },
   "rules": {
-    "rules_version": "provisional-399",
+    "rules_version": "provisional-split-price",
     "provisional": true,
     "n_min": 5,
     "validity_months": 12,
@@ -43,7 +43,7 @@
       ]
     },
     "target_month": "2027-11",
-    "rules_version": "provisional-399",
+    "rules_version": "provisional-split-price",
     "refresh_error": null
   },
   "effective": [

@@ -1,7 +1,7 @@
 """LIVE-T2（#399）：以**錄下的真實 Yahoo 回應**重建每月共識序列與個股明細。
 
 輸入是 `tests/fixtures/yahoo/` 的真實樣本（AAPL／NVDA／BABA 2026-11-22、
-AMZN／GOOGL 2026-11-23 錄製，不含任何秘密），經 `YahooAnalystSource` 轉成
+AMZN／GOOGL／AMD／INTC／AVGO 2026-11-23 錄製，不含任何秘密），經 `YahooAnalystSource` 轉成
 `AnalystTargetRecord`，再交給既有共識引擎；規則與部署環境相同
 （`ConsensusRules(aliases=FIRM_ALIASES)`，見 `api/index.py`）。測試不連外。
 
@@ -132,3 +132,44 @@ def test_targets_older_than_the_validity_window_are_dropped():
     assert {"Deutsche Bank", "Susquehanna"} <= on_edge
     assert not {"Deutsche Bank", "Susquehanna", "Loop Capital"} & past_edge
     assert "Loop Capital" not in on_edge
+
+
+# --- 疑似分割誤判：以週線收盤排除（AMD／INTC 2026-11-22） ---------------------
+# AMD Piper Sandler 300 → 600（Announces、沒寫前值）、INTC Evercore ISI 45 → 131
+# （3:1 附近）：兩檔都沒有分割，Yahoo 週線（已調整所有已知分割）在兩筆之間也
+# 沒有任何一週的漲跌接近分割比例 → 真實的目標價調整，不是缺分割資訊。
+SPLIT_PRICE_DAY = date(2026, 11, 22)
+
+
+def _priced(symbol, as_of, **kw):
+    result = _source(symbol)
+    return compute_snapshot(result.records, result.splits, as_of, RULES,
+                            coverage=result.coverage,
+                            weekly_closes=result.weekly_closes, **kw)
+
+
+@pytest.mark.parametrize("symbol, firm", [("AMD", "Piper Sandler"),
+                                          ("INTC", "Evercore ISI Group")])
+def test_real_target_jump_without_a_matching_weekly_price_move_is_not_a_split(symbol, firm):
+    without_prices = _snapshot(symbol, SPLIT_PRICE_DAY)
+    assert any(firm in r for r in without_prices.reasons)          # 舊規則：誤判
+    snap = _priced(symbol, SPLIT_PRICE_DAY)
+    assert not any(r.startswith("split_unresolved") for r in snap.reasons)
+    assert not any(p.reason == "split_unresolved" for p in snap.series)
+    assert snap.status != "split_unresolved"
+
+
+def test_nvda_stays_clear_when_weekly_closes_are_supplied():
+    snap = _priced("NVDA", NVDA_DAY)
+    assert snap.status == "ok"
+    assert snap.history_points == 60
+
+
+def test_rebasing_adjusts_records_stay_flagged_even_with_weekly_closes():
+    # Yahoo 收盤已調整 AMZN 2022 的 20:1，收盤上看不到跳動；但分割後的
+    # 「Adjusts」紀錄照舊不排除，缺分割日曆時 2022 年中仍被剔除。
+    result = _source("AMZN")
+    snap = compute_snapshot(result.records, [], date(2026, 11, 21), RULES,
+                            weekly_closes=result.weekly_closes)
+    mid_2022 = [p for p in snap.series if date(2022, 6, 30) <= p.on <= date(2022, 11, 30)]
+    assert mid_2022 and all(p.reason == "split_unresolved" for p in mid_2022)

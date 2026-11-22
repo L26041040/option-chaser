@@ -49,7 +49,8 @@ def main(symbols: list[str]) -> int:
         ok += 1
         result = source.to_provider_result(sym, data)
         snap = compute_snapshot(result.records, result.splits, today, rules,
-                                coverage=result.coverage, cross_check=result.cross_check)
+                                coverage=result.coverage, cross_check=result.cross_check,
+                                weekly_closes=result.weekly_closes)
         summary = data.summary
         share = len(summary.targets) / summary.history_rows if summary.history_rows else 0
         earliest = min((t.published_on for t in summary.targets), default=None)
