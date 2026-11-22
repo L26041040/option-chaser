@@ -208,6 +208,19 @@ def test_universe_summary_counts():
     assert u["as_of"] == "2026-09-28"
 
 
+def test_universe_reports_how_many_symbols_are_not_built_yet():
+    """LIVE-T4（#400）：共識資料還沒建立的檔數（沒有快取、也還沒失敗過）——
+    搜尋頁據此顯示「資料建立中」，而不是「沒有入選股」的空結果。抓過但
+    來源沒資料（FFF）或失敗（GGG）都算已建立（有原因可顯示）。"""
+    client, _ = _fixture_client()
+    assert _consensus(client)["universe"]["not_built"] == 7
+    r = client.post("/api/opportunity/consensus/update", json={"symbols": ["AAA"]})
+    assert r.status_code == 200, r.text
+    assert _consensus(client)["universe"]["not_built"] == 6
+    _run_cron(client)
+    assert _consensus(client)["universe"]["not_built"] == 0
+
+
 def test_default_universe_is_the_provisional_sample():
     storage = MemoryStorage()
     client = _app(storage, source=FixtureAnalystSource(FIXTURE))

@@ -11,6 +11,7 @@
     "symbols": 7,
     "with_data": 5,
     "insufficient": 1,
+    "not_built": 0,
     "coverage": {
       "complete": 1,
       "partial": 2,

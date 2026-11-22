@@ -28,6 +28,11 @@
  * - 文案只說「目標價情境報酬」，並固定一句它不是期望值或勝率。
  * - 來源已設定時，頁首下方是「分析師資料」區塊（`AnalystUpdatePanel`，
  *   LIVE-T3／#398）：更新／重試結束後重讀共識清單。
+ * - 共識資料還沒建立（`universe.not_built`，LIVE-T4／#400）：一檔都還沒建立
+ *   時入選股區塊只說「資料建立中」、搜尋停用——不顯示「沒有入選股」的空
+ *   結果；部分建立時照常列出並說明還有幾檔在建立中。
+ * - 搜尋失敗與「部分家族沒有結果」（`incomplete`）的訊息由後端組好（引擎
+ *   自己對每個策略的原因、基準到期日），這裡照實顯示。
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -43,10 +48,12 @@ import {
   type OpportunityConsensusResponse,
   type OpportunityRow,
   type OpportunitySearchFailure,
+  type OpportunitySearchIncomplete,
   type OpportunitySearchRequest,
   type SortOption,
 } from "./api";
 import { strategyLabel } from "./detail";
+import { FAMILY_LABELS } from "./family";
 import { setAuthStatusCache, subscribeAuthStatus } from "./fetchCache";
 import ConsensusDetailToggle from "./ConsensusDetail";
 import {
@@ -93,6 +100,8 @@ type Load =
 interface SearchState {
   rows: OpportunityRow[];
   failures: OpportunitySearchFailure[];
+  /** 有結果但缺了某個家族的股票（LIVE-T4／#400）：不是失敗，照實說原因。 */
+  incomplete: OpportunitySearchIncomplete[];
   processed: string[];
   total: number;
   remaining: string[];
@@ -103,7 +112,7 @@ interface SearchState {
 }
 
 const EMPTY_SEARCH: SearchState = {
-  rows: [], failures: [], processed: [], total: 0, remaining: [],
+  rows: [], failures: [], incomplete: [], processed: [], total: 0, remaining: [],
   deferred: [], sortOptions: [],
 };
 
@@ -210,6 +219,10 @@ export default function OpportunityPage({
             failures: [
               ...prev.failures.filter((f) => !r.failures.some((g) => g.symbol === f.symbol)),
               ...r.failures,
+            ],
+            incomplete: [
+              ...prev.incomplete.filter((f) => !r.processed.includes(f.symbol)),
+              ...(r.incomplete ?? []),
             ],
             processed,
             total: isFirst ? processed.length + r.remaining.length : prev.total,
@@ -360,7 +373,11 @@ function ConfiguredBody({
 }) {
   const selected = data.items.filter((i) => i.gate.selected);
   const weak = data.items.filter((i) => !i.gate.selected && i.status === "ok");
-  const thin = data.items.filter((i) => i.status !== "ok");
+  // 還沒建立的檔（LIVE-T4／#400）不算「資料不足」：它們不是資料有問題，
+  // 是還沒抓——在入選股區塊以「資料建立中」說明，不混進原因清單。
+  const thin = data.items.filter((i) => i.status !== "ok" && !isNotBuilt(i));
+  const notBuilt = data.universe.not_built ?? 0;
+  const nothingBuilt = notBuilt > 0 && notBuilt >= data.universe.symbols;
   const ranked = rankOpportunities(search.rows, sort);
 
   return (
@@ -368,8 +385,14 @@ function ConfiguredBody({
       <UniverseCard data={data} />
 
       <section className="card" aria-label="入選股">
-        <h2 className="section-title">入選股（{selected.length} 檔）</h2>
-        {selected.length === 0 ? (
+        <h2 className="section-title">
+          {nothingBuilt ? "入選股" : `入選股（${selected.length} 檔）`}
+        </h2>
+        {nothingBuilt ? (
+          <p className="notice" role="status">
+            資料建立中：{notBuilt} 檔的分析師資料還沒建立，建立完成後才會有入選清單。請用上方的「更新分析師資料」建立。
+          </p>
+        ) : selected.length === 0 ? (
           <p className="caption">目前沒有同時通過兩道門檻的股票。</p>
         ) : (
           <ul className="opp-list">
@@ -387,7 +410,7 @@ function ConfiguredBody({
             type="button"
             className="pbtn"
             onClick={onSearch}
-            disabled={running || selected.length === 0}
+            disabled={running || nothingBuilt || selected.length === 0}
           >
             搜尋選擇權
           </button>
@@ -412,7 +435,12 @@ function ConfiguredBody({
             </button>
           )}
         </div>
-        {selected.length === 0 && (
+        {!nothingBuilt && notBuilt > 0 && (
+          <p className="notice" role="status">
+            資料建立中：還有 {notBuilt} 檔尚未建立，入選清單可能不完整。
+          </p>
+        )}
+        {!nothingBuilt && selected.length === 0 && (
           <p className="caption">沒有入選股，所以沒有可以搜尋的標的。</p>
         )}
         {started && search.total > 0 && (
@@ -442,6 +470,23 @@ function ConfiguredBody({
               <li key={f.symbol} aria-label={f.symbol} className="opp-item">
                 <strong>{f.symbol}</strong>
                 <span className="tag warn">{FAILURE_LABELS[f.reason] ?? f.reason}</span>
+                <p className="caption">{f.message}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {search.incomplete.length > 0 && (
+        <section className="card" aria-label="部分家族沒有結果">
+          <h2 className="section-title">部分家族沒有結果（{search.incomplete.length} 檔）</h2>
+          <ul className="opp-list">
+            {search.incomplete.map((f) => (
+              <li key={f.symbol} aria-label={f.symbol} className="opp-item">
+                <strong>{f.symbol}</strong>
+                {f.families.map((family) => (
+                  <span key={family} className="tag warn">{FAMILY_LABELS[family] ?? family}</span>
+                ))}
                 <p className="caption">{f.message}</p>
               </li>
             ))}
@@ -557,6 +602,13 @@ function ConfiguredBody({
       />
     </>
   );
+}
+
+/** 還沒建立共識資料：沒有快取、也還沒失敗過（後端固定原因字串，與
+ *  `universe.not_built` 同一個判準）。 */
+const NOT_BUILT_REASON = "no_data: 尚未更新";
+function isNotBuilt(item: ConsensusItem): boolean {
+  return item.reasons.length === 1 && item.reasons[0] === NOT_BUILT_REASON;
 }
 
 function weakReasons(

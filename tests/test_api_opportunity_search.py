@@ -255,6 +255,77 @@ def test_zero_candidates_is_a_failure_and_other_symbols_are_unaffected():
     assert body["strategies"] == ["butterfly"]
 
 
+def test_zero_candidates_failure_says_why_in_the_engine_s_own_words():
+    """LIVE-T4（#400）：真實 chain 才常見的零候選要說清楚卡在哪——基準到期日
+    （最接近目標月份、劇本頭條取的那一期）與引擎自己對每個策略的狀態與訊息
+    （方向不適用而沒跑的策略不算原因）。**不放寬任何過濾規則**。"""
+    with_flies, without_flies = _chain(), load_snapshot(
+        "tests/fixtures/xyz_v4_six_expiries.json")
+    client, _ = _app(fetch=lambda s: with_flies if s == "AAA" else without_flies,
+                     refresh_run_group_limit=10)
+    _ready(client)
+    failure = _search(client, {"strategies": ["butterfly"]})["failures"][0]
+    assert failure["symbol"] == "EEE" and failure["reason"] == "no_candidates"
+    assert failure["baseline_expiry"] == "2026-12-18"
+    assert failure["other_expiries"] == []
+    assert failure["strategies"] == [{
+        "strategy": "call-fly", "status": "empty", "n_qualified": 0,
+        "message": "目前沒有符合流動性與報價條件的合約。"}]
+    assert failure["message"] == (
+        "EEE 在基準到期日 2026-12-18（最接近目標月份 2027-09）沒有合格候選；"
+        "Call Butterfly：目前沒有符合流動性與報價條件的合約。")
+
+
+def test_baseline_expiry_without_quotes_is_named_even_when_other_expiries_qualify():
+    """真實 chain 的長天期合約常常沒有報價：目標月份附近那一期（基準到期日）
+    全被既有過濾剔除時，即使別的到期日有合格候選也照實是零候選（與手動建立
+    同參數劇本一致——劇本頭條同樣只取基準到期日），並列出哪些到期日其實
+    有候選，讓使用者知道不是整條鏈都不能用。"""
+    base = _chain()
+    no_quotes_at_baseline = dataclasses.replace(base, contracts=tuple(
+        dataclasses.replace(c, bid=None, ask=None) if c.expiry == "2026-12-18" else c
+        for c in base.contracts))
+    client, _ = _app(fetch=lambda s: no_quotes_at_baseline)
+    _ready(client)
+    body = _search(client, {"symbols": ["AAA"]})
+    assert body["rows"] == []
+    failure = body["failures"][0]
+    assert failure["reason"] == "no_candidates"
+    assert failure["baseline_expiry"] == "2026-12-18"
+    assert failure["other_expiries"] == ["2026-09-18", "2026-10-16"]
+    assert failure["message"].startswith(
+        "AAA 在基準到期日 2026-12-18（最接近目標月份 2027-09）沒有合格候選；"
+        "其他到期日有合格候選（2026-09-18、2026-10-16），但劇本頭條只取基準到期日")
+    # 與手動建立同參數劇本一致：既有劇本同樣沒有代表候選。
+    created = client.post("/api/scenarios", json={
+        "symbol": "AAA", "target_price": 120.0, "target_month": "2027-09",
+        "strategies": ALL_FAMILIES})
+    sid = created.json()["id"]
+    refreshed = client.post(f"/api/scenarios/{sid}/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["representative_candidate"] is None
+
+
+def test_a_family_missing_from_a_successful_symbol_is_explained_not_silently_dropped():
+    """有結果的股票，某個選了的家族卻沒有列（真實 chain：長天期流動性差、
+    Butterfly 窮舉逾時）→ `incomplete` 照實說是哪個家族、引擎怎麼說；方向
+    不適用（引擎本來就不跑）不算。"""
+    calls_only = load_snapshot("tests/fixtures/xyz_v4_six_expiries.json")   # 湊不出蝶式
+    client, _ = _app(fetch=lambda s: calls_only)
+    _ready(client)
+    body = _search(client, {"symbols": ["EEE"]})
+    assert body["failures"] == []
+    assert sorted(r["family"] for r in body["rows"]) == ["single-leg", "vertical-spread"]
+    assert body["incomplete"] == [{
+        "symbol": "EEE", "families": ["butterfly"],
+        "strategies": [{"strategy": "call-fly", "status": "empty", "n_qualified": 0,
+                        "message": "目前沒有符合流動性與報價條件的合約。"}],
+        "message": "EEE 的 Butterfly 沒有結果：Call Butterfly：目前沒有符合流動性與報價條件的合約。"}]
+    # 三個家族都有列的股票不會出現在 incomplete。
+    assert _search(client, {"symbols": ["EEE"],
+                            "strategies": ["single-leg"]})["incomplete"] == []
+
+
 # ---------- 成本：Global Vendor Fuse、fetch_cap ----------
 
 def test_global_vendor_fuse_stops_the_search_and_returns_remaining():

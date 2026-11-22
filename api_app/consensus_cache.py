@@ -595,6 +595,10 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
                      "with_data": len(with_data),
                      "insufficient": sum(1 for i in with_data
                                          if i["status"] in _INSUFFICIENT),
+                     # 還沒建立（沒有快取、也還沒失敗過）的檔數（LIVE-T4／
+                     # #400）：搜尋頁據此顯示「資料建立中」，不顯示空結果。
+                     "not_built": sum(1 for i in items
+                                      if i["reasons"] == [_NOT_REFRESHED]),
                      "coverage": coverage,
                      "as_of": max((i["as_of"] for i in items if i["as_of"]),
                                   default=None)},

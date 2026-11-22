@@ -12,6 +12,9 @@
   欄位**原值**搬進結果列。**不做任何損益、報酬、成本或過濾計算**
   （#389 §5.2）——結果列每一個數字都是引擎已經算好的值，只是換個名字。
 - `sort_rows()`：依既有欄位排序（不產生新數字）。
+- `no_candidates_detail()`／`missing_families()`（LIVE-T4／#400）：零候選或
+  缺家族時，把引擎已經寫在 view 裡的原因（基準到期日、每個策略的狀態與
+  訊息）照實搬出來——不重新判斷、不放寬過濾。
 
 欄位對應（結果列 ← 既有來源）：
 
@@ -35,7 +38,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from option_chaser import store
-from option_chaser.models import FAMILIES
+from option_chaser.models import FAMILIES, STRATEGY_FAMILY
+from option_chaser.report import STRATEGY_LABELS
 
 from .opportunity_settings import SORTS
 
@@ -100,6 +104,72 @@ def rows_for_symbol(view: dict, *, item: dict, scenario: dict) -> list[dict]:
             "scenario": scenario,
         })
     return rows
+
+
+def _engine_reasons(results) -> list[dict]:
+    """引擎對每個策略的狀態與訊息（`view["results"]` 原值）。"""
+    return [{"strategy": r["strategy"], "status": r["status"],
+             "message": r["message"], "n_qualified": r["n_qualified"]}
+            for r in results]
+
+
+def _label(strategy: str) -> str:
+    return STRATEGY_LABELS.get(strategy, strategy)
+
+
+def no_candidates_detail(view: dict, *, symbol: str, target_month: str) -> dict:
+    """零候選時把引擎已經算好的原因照實搬出來（LIVE-T4／#400）。只讀既有
+    view 欄位，不重新判斷、不放寬任何過濾：
+
+    - `baseline_expiry`：最接近目標月份的到期日——劇本頭條（與這裡的代表
+      候選）只取這一期（`store.representative_candidates_by_family()`）。
+    - `other_expiries`：其他**有**合格候選的到期日（`expiry_groups` 裡有列
+      的期）。真實 chain 的長天期合約常常沒有報價，基準期全被剔除而近月
+      仍有候選時，使用者才知道不是整條鏈都不能用。
+    - `strategies`：引擎對每個策略的狀態與訊息（`view["results"]` 原值）；
+      方向不適用而沒跑的（`skipped_direction`）不是原因，略過。
+    """
+    baseline = view.get("baseline_expiry")
+    others = [g["expiry"] for g in view.get("expiry_groups") or ()
+              if g["rows"] and g["expiry"] != baseline]
+    strategies = _engine_reasons(r for r in view.get("results") or ()
+                                 if r["status"] != "skipped_direction")
+    parts = [f"{symbol} 在基準到期日 {baseline}（最接近目標月份 {target_month}）"
+             "沒有合格候選" if baseline else f"{symbol} 的選擇權鏈沒有可用的到期日"]
+    if others:
+        parts.append(f"其他到期日有合格候選（{'、'.join(others)}），"
+                     "但劇本頭條只取基準到期日")
+    parts += [f"{_label(r['strategy'])}：{r['message']}"
+              for r in strategies if r["status"] != "ok" and r["message"]]
+    return {"message": "；".join(parts), "baseline_expiry": baseline,
+            "other_expiries": others, "strategies": strategies}
+
+
+# 與前端 `src/family.ts` 的家族顯示名稱同一組字。
+FAMILY_LABELS = {"single-leg": "Call / Put", "vertical-spread": "Vertical Spread",
+                 "butterfly": "Butterfly"}
+
+
+def missing_families(view: dict, *, symbol: str, families: list[str],
+                     rows: list[dict]) -> dict | None:
+    """有結果的股票，某個選了的家族卻沒有列（LIVE-T4／#400：真實 chain 的
+    長天期流動性差、大型 chain 的 Butterfly 窮舉逾時）→ 說是哪個家族、引擎
+    怎麼說（`view["results"]` 原值）。方向不適用（`skipped_direction`，引擎
+    本來就不跑）不算缺。都齊了 → `None`。"""
+    present = {r["family"] for r in rows}
+    ran = [r for r in view.get("results") or ()
+           if r["status"] != "skipped_direction"
+           and STRATEGY_FAMILY.get(r["strategy"]) in families
+           and STRATEGY_FAMILY[r["strategy"]] not in present]
+    missing = [f for f in families if any(STRATEGY_FAMILY[r["strategy"]] == f for r in ran)]
+    if not missing:
+        return None
+    strategies = _engine_reasons(ran)
+    why = "；".join(f"{_label(r['strategy'])}："
+                    f"{r['message'] or '基準到期日沒有合格候選'}" for r in strategies)
+    return {"symbol": symbol, "families": missing, "strategies": strategies,
+            "message": f"{symbol} 的 {'、'.join(FAMILY_LABELS[f] for f in missing)} "
+                       f"沒有結果：{why}"}
 
 
 _SORT_KEYS = {

@@ -4073,6 +4073,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
           `remaining` ＝ 本次輸入，互不重疊；`failures` ⊆ `processed`。
         - Global Vendor Fuse 熔斷：停止、該檔與其後全部回 `remaining`、
           `stopped_reason: "fused"`，`message` 沿用既有降級文案。
+        - 失敗原因照實（LIVE-T4／#400）：零候選帶基準到期日、其他有候選的
+          到期日與引擎對每個策略的訊息；有結果但缺了選定家族的股票放
+          `incomplete`（例如大型 chain 的 Butterfly 窮舉逾時）。只搬引擎
+          已算好的欄位，不放寬任何過濾。
         """
         _require_opportunity_role()
         if analyst_source is None:
@@ -4106,6 +4110,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         rows: list[dict] = []
         failures: list[dict] = []
+        incomplete: list[dict] = []
         processed: list[str] = []
         remaining: list[str] = []
         stopped_reason: str | None = None
@@ -4155,11 +4160,21 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             found = opportunity_search.rows_for_symbol(view, item=item,
                                                        scenario=scenario)
             if not found:
-                fail(symbol, "no_candidates", f"{symbol} 沒有合格候選")
+                # 引擎自己對每個策略的原因照實帶出（LIVE-T4／#400）：真實
+                # chain 的零候選多半是長天期流動性差或到期日稀疏，說清楚
+                # 卡在哪，不放寬過濾。
+                detail = opportunity_search.no_candidates_detail(
+                    view, symbol=symbol, target_month=month)
+                fail(symbol, "no_candidates", detail.pop("message"), **detail)
                 continue
             rows.extend(found)
+            missing = opportunity_search.missing_families(
+                view, symbol=symbol, families=families, rows=found)
+            if missing is not None:
+                incomplete.append(missing)
         return {"rows": opportunity_search.sort_rows(rows, sort),
-                "failures": failures, "remaining": remaining,
+                "failures": failures, "incomplete": incomplete,
+                "remaining": remaining,
                 "processed": processed, "fetches_used": fetches_used,
                 "fetch_cap": cap, "truncated": bool(deferred),
                 "deferred": deferred,

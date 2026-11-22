@@ -1296,6 +1296,8 @@ export interface OpportunityConsensusResponse {
     symbols: number;
     with_data: number;
     insufficient: number;
+    /** 還沒建立共識資料（沒有快取、也還沒失敗過）的檔數（LIVE-T4／#400）。 */
+    not_built: number;
     coverage: Record<string, number>;
     as_of: string | null;
   };
@@ -1520,14 +1522,29 @@ export interface OpportunitySearchFailure {
   reason: "fetch_failed" | "no_candidates" | "invalid_month" | "analysis_failed";
   message: string;
   stage?: string | null;
+  /** `no_candidates` 時：引擎自己對每個策略的狀態與訊息（方向不適用的
+   *  策略不列；LIVE-T4／#400）。`message` 已把它們寫成一句話。 */
+  strategies?: { strategy: string; status: string; message: string;
+                 n_qualified: number }[];
 }
 
 /** 形狀以 `contracts/opportunity_search_sample.json` 為準。`remaining` 非空
  *  時以它當 `symbols` 再呼叫一次；`stopped_reason: "fused"` 時 `message` 是
  *  既有降級文案。 */
+/** 有結果的股票，某個選了的家族沒有列（LIVE-T4／#400）——不是失敗；
+ *  `message` 已把引擎對每個策略的原因寫成一句話。 */
+export interface OpportunitySearchIncomplete {
+  symbol: string;
+  families: string[];
+  strategies: { strategy: string; status: string; message: string;
+                n_qualified: number }[];
+  message: string;
+}
+
 export interface OpportunitySearchResponse {
   rows: OpportunityRow[];
   failures: OpportunitySearchFailure[];
+  incomplete: OpportunitySearchIncomplete[];
   remaining: string[];
   processed: string[];
   fetches_used: number;

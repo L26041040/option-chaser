@@ -196,6 +196,54 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
   });
 });
 
+describe("OpportunityPage：資料建立中（LIVE-T4／#400）", () => {
+  const notBuiltItem = (i: OpportunityConsensusResponse["items"][number]) => ({
+    ...i, status: "no_data" as const, as_of: null, mean: null, stdev: null,
+    dispersion: null, percentile: null, n_analysts: 0, history_points: 0,
+    coverage: null, reasons: ["no_data: 尚未更新"],
+    gate: { first: false, second: false, selected: false, reasons: ["no_data: 尚未更新"] },
+  });
+  const NOT_BUILT: OpportunityConsensusResponse = {
+    ...CONSENSUS,
+    universe: { ...CONSENSUS.universe, with_data: 0, insufficient: 0, not_built: 7,
+                coverage: { complete: 0, partial: 0, unknown: 0 }, as_of: null },
+    items: CONSENSUS.items.map(notBuiltItem),
+  };
+
+  it("一檔都還沒建立：顯示「資料建立中」，不顯示「沒有入選股」的空結果，搜尋按鈕停用", async () => {
+    const { spy } = await renderReady({ consensus: { status: 200, body: NOT_BUILT } });
+    const selected = await screen.findByRole("region", { name: "入選股" });
+    expect(selected).toHaveTextContent("資料建立中");
+    expect(selected).toHaveTextContent("7 檔");
+    expect(selected).not.toHaveTextContent("目前沒有同時通過兩道門檻的股票");
+    expect(selected).not.toHaveTextContent("沒有入選股");
+    expect(screen.queryByRole("region", { name: "資料不足" })).not.toBeInTheDocument();
+    expect(within(selected).getByRole("button", { name: "搜尋選擇權" })).toBeDisabled();
+    expect(callsTo(spy, "/api/opportunity/search")).toEqual([]);
+  });
+
+  it("部分建立：照常列出入選股，並說明還有幾檔在建立中、清單可能不完整", async () => {
+    const partial: OpportunityConsensusResponse = {
+      ...CONSENSUS,
+      universe: { ...CONSENSUS.universe, not_built: 2 },
+      items: CONSENSUS.items.map((i) =>
+        ["FFF", "GGG"].includes(i.symbol) ? notBuiltItem(i) : i),
+    };
+    await renderReady({ consensus: { status: 200, body: partial } });
+    const selected = await screen.findByRole("region", { name: "入選股" });
+    expect(within(selected).getByRole("listitem", { name: "AAA" })).toBeInTheDocument();
+    expect(selected).toHaveTextContent("資料建立中：還有 2 檔尚未建立");
+    expect(within(selected).getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
+  });
+
+  it("全部建立後不出現「資料建立中」", async () => {
+    await renderReady();
+    const selected = await screen.findByRole("region", { name: "入選股" });
+    await within(selected).findByRole("listitem", { name: "AAA" });
+    expect(screen.queryByText(/資料建立中/)).not.toBeInTheDocument();
+  });
+});
+
 describe("OpportunityPage：個股詳細資料（LIVE-T2／#399）", () => {
   it("入選與未入選的每一列都能打開詳細資料；按下才讀那一檔", async () => {
     const user = userEvent.setup();
@@ -250,6 +298,27 @@ describe("OpportunityPage：搜尋與續跑", () => {
     const eee = within(failures).getByRole("listitem", { name: "EEE" });
     expect(eee).toHaveTextContent("抓不到報價");
     expect(eee).toHaveTextContent("抓不到 EEE 的報價：測試資料模擬上游失敗");
+  });
+
+  it("有結果但缺了某個家族：照實列出缺哪個家族與引擎的原因（LIVE-T4／#400）", async () => {
+    const message = "AAA 的 Butterfly 沒有結果：Call Butterfly：分析耗時超過安全上限，已估值 10／20 組候選後中止（異常輸入的優雅降級，非常態）。";
+    const partial: OpportunitySearchResponse = {
+      ...SEARCH, failures: [], processed: ["AAA"], remaining: [],
+      rows: SEARCH.rows.filter((r) => r.symbol === "AAA" && r.family !== "butterfly"),
+      incomplete: [{ symbol: "AAA", families: ["butterfly"], message,
+                     strategies: [{ strategy: "call-fly", status: "timed_out",
+                                    n_qualified: 0, message: "…" }] }],
+    };
+    await renderReady({ search: [{ status: 200, body: partial }] });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const region = await screen.findByRole("region", { name: "部分家族沒有結果" });
+    const aaa = within(region).getByRole("listitem", { name: "AAA" });
+    expect(aaa).toHaveTextContent("Butterfly");
+    expect(aaa).toHaveTextContent(message);
+    // 不是失敗：其他家族的結果照樣列出。
+    expect(screen.queryByRole("region", { name: "搜尋失敗" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "搜尋結果" }))
+      .getAllByRole("row", { name: /^AAA/ })).toHaveLength(2);
   });
 
   it("「停止」之後不再續跑；剩下的檔可以接著搜尋", async () => {
