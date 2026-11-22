@@ -1296,8 +1296,12 @@ export interface OpportunityConsensusResponse {
     symbols: number;
     with_data: number;
     insufficient: number;
-    /** 還沒建立共識資料（沒有快取、也還沒失敗過）的檔數（LIVE-T4／#400）。 */
+    /** 還沒建立共識資料（沒有快取、也還沒失敗過）的檔數（LIVE-T4／#400），
+     *  不含超出每日更新範圍的（`out_of_scope`）。 */
     not_built: number;
+    /** 這個母體裡超出每日更新範圍（更新母體有上限）、不會被更新的檔數與代號。 */
+    out_of_scope?: number;
+    out_of_scope_symbols?: string[];
     coverage: Record<string, number>;
     as_of: string | null;
   };
@@ -1354,7 +1358,8 @@ export interface ConsensusRefreshSymbol {
   last_attempt_at: string | null;
   error: string | null;
   retries_today: number;
-  /** 冷卻中＝最早可重試時間；用完＝下一個美東日零時；其餘 `null`。 */
+  /** 冷卻中＝最早可重試時間；用完＝下一個交易日（週末、週五後是下週一）
+   *  的美東零時；其餘 `null`。 */
   next_retry_at: string | null;
   retryable_now: boolean;
   /** 這檔最新一份成功資料的日期。 */
@@ -1391,6 +1396,11 @@ export interface ConsensusRefreshStatusResponse {
   data_as_of: string | null;
   progress: ConsensusRefreshProgress;
   symbols: ConsensusRefreshSymbol[];
+  /** 來源回 429 後的全站暫停結束時間（ISO UTC）；沒有暫停為 `null`。 */
+  rate_limited_until?: string | null;
+  /** 使用者母體裡超出每日更新範圍的檔數與代號（進度不含它們）。 */
+  out_of_scope?: number;
+  out_of_scope_symbols?: string[];
 }
 
 /** `POST /api/opportunity/consensus/update`。形狀以
@@ -1408,8 +1418,10 @@ export interface ConsensusUpdateResponse {
   remaining: string[];
   skipped: { symbol: string; state: ConsensusRefreshState;
              next_retry_at: string | null; message: string }[];
-  stopped_reason: "daily_cap" | null;
+  stopped_reason: "daily_cap" | "rate_limited" | null;
   message: string | null;
+  /** `stopped_reason: "rate_limited"` 時的全站暫停結束時間（ISO UTC）。 */
+  rate_limited_until?: string | null;
   upstream_calls_today: number;
   daily_cap: number;
   progress: ConsensusRefreshProgress;

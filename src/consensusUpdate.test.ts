@@ -13,6 +13,7 @@ import {
   formatWait,
   isFailed,
   nextAutoUpdate,
+  outOfScopeText,
   progressText,
   retryGate,
 } from "./consensusUpdate";
@@ -65,6 +66,17 @@ describe("retryGate", () => {
         enabled: false, remainingSeconds: null,
         reason: "今日上游呼叫已達每日上限，明天自動更新" });
     }
+  });
+
+  it("來源限流（429）暫停中：失敗與待更新的都停用，說明還要等多久", () => {
+    const ctx = { rateLimitedUntil: "2026-09-28T13:20:00Z" };
+    for (const state of ["retry_ready", "cooling", "pending"] as const) {
+      expect(retryGate(sym({ state, next_retry_at: null }), NOW, ctx)).toEqual({
+        enabled: false, remainingSeconds: 1200,
+        reason: "資料來源限流中（429），還要約 20 分 00 秒才會再更新" });
+    }
+    expect(retryGate(sym({ state: "retry_ready", next_retry_at: null }),
+                     Date.parse("2026-09-28T13:20:00Z"), ctx).enabled).toBe(true);
   });
 
   it("讀不懂的時間視同到期，不把按鈕永久鎖住", () => {
@@ -120,13 +132,43 @@ describe("dataPhase：就緒／建立中／失敗／已達上限", () => {
       .toEqual({ kind: "ready" });
   });
 
+  it("來源限流（429）暫停中、還有沒做完的：限流中，帶結束時間（優先於建立中）", () => {
+    const paused = { ...STATUS, rate_limited_until: "2026-09-28T13:20:00Z" };
+    expect(dataPhase(withUniverse({ not_built: 2 }), paused, NOW))
+      .toEqual({ kind: "rate_limited", until: "2026-09-28T13:20:00Z" });
+    // 暫停已結束（用自己的時鐘）：照常判斷。
+    expect(dataPhase(withUniverse({ not_built: 2 }), paused,
+                     Date.parse("2026-09-28T13:20:00Z"))).toEqual({ kind: "building" });
+  });
+
+  it("超出每日更新範圍的股票不會被建立：不讓頁面停在建立中", () => {
+    // 後端 `not_built` 已不含它們；只剩超出範圍的沒建立 → 就緒。
+    expect(dataPhase(withUniverse({ not_built: 0, out_of_scope: 3 }), noFailures))
+      .toEqual({ kind: "ready" });
+  });
+
   it("狀態還沒讀到：只看共識清單", () => {
     expect(dataPhase(withUniverse({ not_built: 1 }), null)).toEqual({ kind: "building" });
     expect(dataPhase(withUniverse({ not_built: 0 }), null)).toEqual({ kind: "ready" });
   });
 });
 
+describe("outOfScopeText", () => {
+  it("有超出每日更新範圍的：一句話說明；沒有：不顯示", () => {
+    expect(outOfScopeText(withUniverse({ out_of_scope: 3 })))
+      .toBe("3 檔超出每日更新範圍，不會更新");
+    expect(outOfScopeText(withUniverse({ out_of_scope: 0 }))).toBeNull();
+    const { out_of_scope: _drop, ...older } = CONSENSUS.universe;
+    expect(outOfScopeText({ ...CONSENSUS, universe: older })).toBeNull();
+  });
+});
+
 describe("builtCount", () => {
+  it("超出每日更新範圍的不算進已建立", () => {
+    expect(builtCount(withUniverse({ out_of_scope: 1, out_of_scope_symbols: ["AAA"] })))
+      .toBe(5);
+  });
+
   it("扣掉還沒建立與抓取失敗（source_error）的；只有共識值（no_data）也算已建立", () => {
     // 樣本 7 檔：GGG source_error，其餘 6 檔都已建立。
     expect(builtCount(CONSENSUS)).toBe(6);

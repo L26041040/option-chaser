@@ -12,7 +12,6 @@ Decimal context 無關，同一輸入永遠得到同一輸出。浮點輸入（�
 from __future__ import annotations
 
 import calendar
-import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Context, Decimal, localcontext
@@ -383,10 +382,11 @@ def _explained_by_prices(prev: AnalystTargetRecord, nxt: AnalystTargetRecord,
     gap = rules.split_price_max_gap_days
     if (start - window[0][0]).days > gap or (window[-1][0] - end).days > gap:
         return False
-    limit = float(rules.split_price_move_share) * abs(math.log(float(ratio)))
-    for (d0, c0), (d1, c1) in zip(window, window[1:]):
-        if (d1 - d0).days > gap or abs(math.log(float(c1) / float(c0))) >= limit:
-            return False
+    with localcontext(_CTX):
+        limit = _dec(rules.split_price_move_share) * abs(_dec(ratio).ln())
+        for (d0, c0), (d1, c1) in zip(window, window[1:]):
+            if (d1 - d0).days > gap or abs((_dec(c1) / _dec(c0)).ln()) >= limit:
+                return False
     return True
 
 

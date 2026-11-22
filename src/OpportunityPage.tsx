@@ -387,7 +387,9 @@ function ConfiguredBody({
   // 是還沒抓——在入選股區塊以「資料建立中」說明，不混進原因清單。
   const thin = data.items.filter((i) => i.status !== "ok" && !isNotBuilt(i));
   const notBuilt = data.universe.not_built ?? 0;
-  const nothingBuilt = notBuilt > 0 && notBuilt >= data.universe.symbols;
+  // 超出每日更新範圍的（`out_of_scope`）不會被建立，不算進「一檔都還沒建立」。
+  const nothingBuilt = notBuilt > 0
+    && notBuilt >= data.universe.symbols - (data.universe.out_of_scope ?? 0);
   const ranked = rankOpportunities(search.rows, sort);
 
   return (

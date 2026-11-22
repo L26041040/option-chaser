@@ -61,6 +61,13 @@ export interface RetryContext {
   capReached?: boolean;
   /** 狀態 API 的美東日期（`today`），用來說「明天」或「下週一」。 */
   today?: string;
+  /** 來源回 429 後的全站暫停結束時間（`rate_limited_until`）；暫停中什麼都
+   *  不會打上游。 */
+  rateLimitedUntil?: string | null;
+}
+
+function rateLimitedReason(seconds: number): string {
+  return `資料來源限流中（429），還要約 ${formatWait(seconds)}才會再更新`;
 }
 
 export function retryGate(s: ConsensusRefreshSymbol, nowMs: number,
@@ -68,6 +75,10 @@ export function retryGate(s: ConsensusRefreshSymbol, nowMs: number,
   if (ctx.capReached && (s.state === "pending" || isFailed(s))) {
     return { enabled: false, reason: `今日上游呼叫已達每日上限，${nextAutoUpdate(ctx.today)}`,
              remainingSeconds: null };
+  }
+  const paused = secondsUntil(ctx.rateLimitedUntil ?? null, nowMs);
+  if (paused > 0 && (s.state === "pending" || isFailed(s))) {
+    return { enabled: false, reason: rateLimitedReason(paused), remainingSeconds: paused };
   }
   switch (s.state) {
     case "pending":
@@ -102,10 +113,13 @@ export function capReached(status: ConsensusRefreshStatusResponse | null): boole
 /**
  * 分析師資料的整體狀態（LIVE-T5／#401），決定頁面該叫使用者做什麼：
  *
+ * - `rate_limited`：來源回 429 後的全站暫停還沒結束（用自己的時鐘比對
+ *   `rate_limited_until`），而且還有沒做完的——什麼都不能按，冷卻結束後再更新。
  * - `capped`：今日上游呼叫已達上限，而且還有沒做完的（沒建立、失敗或今天
  *   還沒更新）——什麼都不能按，明天自動更新。優先於其他狀態，因為此時
  *   「繼續更新」或「重試」都會被後端拒絕。
- * - `building`：母體裡還有沒建立過的股票（`universe.not_built`）——「繼續更新」。
+ * - `building`：母體裡還有沒建立過的股票（`universe.not_built`，後端已扣掉
+ *   超出每日更新範圍、永遠不會建立的 `out_of_scope`）——「繼續更新」。
  * - `failed`：都試過了，但有股票更新失敗——列出原因，依冷卻／次數重試。
  * - `ready`：可以直接搜尋選擇權。
  *
@@ -115,13 +129,19 @@ export type DataPhase =
   | { kind: "ready" }
   | { kind: "building" }
   | { kind: "failed"; failed: number }
+  | { kind: "rate_limited"; until: string }
   | { kind: "capped"; calls: number; cap: number };
 
 export function dataPhase(consensus: OpportunityConsensusResponse,
-                          status: ConsensusRefreshStatusResponse | null): DataPhase {
+                          status: ConsensusRefreshStatusResponse | null,
+                          nowMs: number = Date.now()): DataPhase {
   const notBuilt = consensus.universe.not_built ?? 0;
   const failed = status ? status.symbols.filter(isFailed).length : 0;
   const outstanding = notBuilt > 0 || failed > 0 || (status?.progress.pending ?? 0) > 0;
+  const until = status?.rate_limited_until ?? null;
+  if (until !== null && secondsUntil(until, nowMs) > 0 && outstanding) {
+    return { kind: "rate_limited", until };
+  }
   if (status && capReached(status) && outstanding) {
     return { kind: "capped", calls: status.upstream_calls_today, cap: status.daily_cap };
   }
@@ -138,7 +158,21 @@ export function isNotBuilt(item: ConsensusItem): boolean {
 }
 
 /** 已建立的檔數：母體中抓過、有結果的（只有共識值、沒有個別目標價的
- *  `no_data` 也算抓過）；還沒建立與抓取失敗（`source_error`）的不算。 */
+ *  `no_data` 也算抓過）；還沒建立、抓取失敗（`source_error`）與超出每日更新
+ *  範圍（`out_of_scope_symbols`）的不算。 */
 export function builtCount(consensus: OpportunityConsensusResponse): number {
-  return consensus.items.filter((i) => i.status !== "source_error" && !isNotBuilt(i)).length;
+  const outside = new Set(consensus.universe.out_of_scope_symbols ?? []);
+  return consensus.items.filter((i) => i.status !== "source_error" && !isNotBuilt(i)
+                                       && !outside.has(i.symbol)).length;
+}
+
+/** 母體中在每日更新範圍內的檔數（「已建立 N／T」的 T）。 */
+export function inScopeTotal(consensus: OpportunityConsensusResponse): number {
+  return consensus.universe.symbols - (consensus.universe.out_of_scope ?? 0);
+}
+
+/** 使用者母體裡超出每日更新範圍（後端更新母體有上限）的檔數說明；沒有就 `null`。 */
+export function outOfScopeText(consensus: OpportunityConsensusResponse): string | null {
+  const n = consensus.universe.out_of_scope ?? 0;
+  return n > 0 ? `${n} 檔超出每日更新範圍，不會更新` : null;
 }

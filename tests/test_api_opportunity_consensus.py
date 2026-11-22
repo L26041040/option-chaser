@@ -221,6 +221,32 @@ def test_universe_reports_how_many_symbols_are_not_built_yet():
     assert _consensus(client)["universe"]["not_built"] == 0
 
 
+
+def test_symbols_beyond_the_daily_update_cap_are_reported_out_of_scope_not_building():
+    """自訂清單超出每日更新母體（上限）的那幾檔永遠不會被更新：不算「還沒建立」
+    （否則頁面永遠停在「建立中」），另外以 `out_of_scope` 照實列出。"""
+    client, _ = _fixture_client(consensus_refresh_symbol_cap=52)
+    # 更新母體＝樣本 50 檔＋自訂清單依代號排序的前 2 檔（AAA、BBB）。
+    out = ["CCC", "DDD", "EEE", "FFF", "GGG"]
+    before = _consensus(client)["universe"]
+    assert before["not_built"] == 2
+    assert before["out_of_scope"] == 5 and before["out_of_scope_symbols"] == out
+    _run_cron(client)
+    after = _consensus(client)["universe"]
+    assert after["not_built"] == 0
+    assert after["out_of_scope"] == 5 and after["out_of_scope_symbols"] == out
+    status = client.get("/api/opportunity/consensus/status").json()
+    assert status["out_of_scope"] == 5 and status["out_of_scope_symbols"] == out
+    assert status["progress"]["pending"] == 0
+
+
+def test_everything_in_scope_reports_no_out_of_scope_symbols():
+    client, _ = _fixture_client()
+    assert _consensus(client)["universe"]["out_of_scope"] == 0
+    assert _consensus(client)["universe"]["out_of_scope_symbols"] == []
+    status = client.get("/api/opportunity/consensus/status").json()
+    assert status["out_of_scope"] == 0 and status["out_of_scope_symbols"] == []
+
 def test_default_universe_is_the_provisional_sample():
     storage = MemoryStorage()
     client = _app(storage, source=FixtureAnalystSource(FIXTURE))

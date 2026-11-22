@@ -69,6 +69,7 @@
   "skipped": [],
   "stopped_reason": null,
   "message": null,
+  "rate_limited_until": null,
   "upstream_calls_today": 25,
   "daily_cap": 400,
   "progress": {

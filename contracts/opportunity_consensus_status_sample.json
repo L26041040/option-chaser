@@ -11,6 +11,8 @@
     "batch_size": 25
   },
   "daily_cap": 400,
+  "out_of_scope": 0,
+  "out_of_scope_symbols": [],
   "source": {
     "configured": true,
     "name": "fixture",
@@ -653,5 +655,6 @@
     }
   ],
   "data_as_of": "2026-09-28",
-  "upstream_calls_today": 25
+  "upstream_calls_today": 25,
+  "rate_limited_until": null
 }

@@ -47,7 +47,7 @@ def main(symbols: list[str]) -> int:
             continue
         elapsed = time.monotonic() - t0
         ok += 1
-        result = source.to_provider_result(sym, data)
+        result = source.to_provider_result(sym, data, fetched_on=today)
         snap = compute_snapshot(result.records, result.splits, today, rules,
                                 coverage=result.coverage, cross_check=result.cross_check,
                                 weekly_closes=result.weekly_closes)

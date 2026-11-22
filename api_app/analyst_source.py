@@ -147,10 +147,12 @@ class YahooAnalystSource:
             return ProviderResult(coverage="partial", error=f"{e}{hint}",
                                   rate_limited=e.rate_limited,
                                   retry_after=e.retry_after)
-        return self.to_provider_result(symbol, data)
+        return self.to_provider_result(symbol, data, fetched_on=today)
 
-    def to_provider_result(self, symbol: str, data: YahooSymbolData) -> ProviderResult:
-        """已抓到的 `YahooSymbolData` → `ProviderResult`（純轉換，不打上游）。"""
+    def to_provider_result(self, symbol: str, data: YahooSymbolData, *,
+                           fetched_on: date | None = None) -> ProviderResult:
+        """已抓到的 `YahooSymbolData` → `ProviderResult`（純轉換，不打上游）。
+        `fetched_on`＝抓取日（美東）：最後一根週線收盤最早在這天才可得。"""
         retrieved = datetime.now(timezone.utc)
         records = tuple(
             AnalystTargetRecord(
@@ -172,7 +174,8 @@ class YahooAnalystSource:
             coverage="partial",
             history_from=min((r.published_on for r in records), default=None),
             cross_check=cross,
-            weekly_closes=closes_by_close_date(data.weekly_closes))
+            weekly_closes=closes_by_close_date(data.weekly_closes,
+                                               available_on=fetched_on))
 
 
 ANALYST_SOURCE_ENV = "OC_ANALYST_SOURCE"

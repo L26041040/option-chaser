@@ -171,6 +171,16 @@ describe("分析師資料：更新（自動續跑）", () => {
     expect(updateBodies(spy)).toEqual([{}]);
   });
 
+  it("來源限流（429）：立刻停下、照實顯示原因，不再續跑", async () => {
+    const { spy, panel } = await renderPanel({ update: [{ status: 200, body: {
+      ...UPDATE, stopped_reason: "rate_limited", rate_limited_until: "2099-01-01T00:00:00+00:00",
+      message: "資料來源回應限流（429），所有分析師資料更新暫停到冷卻結束，期間不會再呼叫來源" } }] });
+    await userEvent.click(within(panel).getByRole("button", { name: "更新分析師資料" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "已停止（已完成 24／57 檔、失敗 1 檔）：資料來源回應限流（429）");
+    expect(updateBodies(spy)).toEqual([{}]);
+  });
+
   it("後端拒絕：顯示後端訊息", async () => {
     const { panel } = await renderPanel({ update: [{ status: 409,
       body: { detail: "尚未設定分析師資料來源" } }] });
@@ -370,6 +380,32 @@ describe("資料狀態（LIVE-T5／#401）", () => {
     expect(updateBodies(spy)).toEqual([]);
     // 已建立的資料照常可以搜尋。
     expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
+  });
+
+  it("來源限流（429）暫停中：更新與重試都停用，說明還要等多久，不送更新請求", async () => {
+    const paused = withSymbol("GGG", { state: "retry_ready", next_retry_at: null,
+                                       retryable_now: true });
+    const until = new Date(Date.now() + 20 * 60_000).toISOString();
+    const { spy, panel } = await renderPanel({ consensus: [REAL], status: [{ status: 200,
+      body: { ...paused, rate_limited_until: until } }] });
+    expect(phaseTag(panel)).toHaveTextContent("來源限流中");
+    expect(within(panel).getByRole("status")).toHaveTextContent("資料來源限流（429）");
+    expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeDisabled();
+    const item = within(panel).getByRole("listitem", { name: "GGG" });
+    expect(within(item).getByRole("button", { name: "重試 GGG" })).toBeDisabled();
+    expect(updateBodies(spy)).toEqual([]);
+  });
+
+  it("超出每日更新範圍：一句話說明，已建立只算範圍內，不停在建立中", async () => {
+    const outside = building(REAL, ["FFF"]);
+    const consensus = { ...outside, universe: { ...outside.universe, not_built: 0,
+                                                out_of_scope: 1, out_of_scope_symbols: ["FFF"] } };
+    const { panel } = await renderPanel({ consensus: [consensus],
+                                          status: [{ status: 200, body: ALL_DONE }] });
+    expect(phaseTag(panel)).toHaveTextContent("就緒");
+    expect(within(panel).getByText("1 檔超出每日更新範圍，不會更新")).toBeInTheDocument();
+    expect(fact(panel, "已建立")).toHaveTextContent("5／6 檔");   // FFF 不在範圍、GGG 失敗
+    expect(screen.queryByText(/資料建立中/)).not.toBeInTheDocument();
   });
 
   it("已達今日上限且當天是美東週五：說下週一自動更新", async () => {

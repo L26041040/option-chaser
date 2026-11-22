@@ -122,6 +122,21 @@ export default function Settings() {
   const [linkedSection] = useState(() => settingsSectionFromHash(window.location.hash));
   const [activeSection, setActiveSection] =
     useState<SettingsSection>(linkedSection ?? "general");
+  // 已經在設定頁時網址才改成帶區塊的 hash（例如另一個分頁、書籤或手動
+  // 改網址）：元件不會重新掛載，所以要聽 hashchange 才會切到那一塊。
+  // 沒帶區塊（`#/settings`）不動目前的分頁。
+  useEffect(() => {
+    function onHashChange() {
+      const section = settingsSectionFromHash(window.location.hash);
+      if (section === null) return;
+      setActiveSection(section);
+      if (!isDesktop) {
+        document.getElementById(OPPORTUNITY_SETTINGS_ID)?.scrollIntoView({ block: "start" });
+      }
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [isDesktop]);
 
   // 角色查詢跟 `RoleLogin` 共用同一份快取（只有第一個真的發請求）。
   // 查不到時當作 Normal——跟 `RoleLogin` 查詢失敗「維持現況」一致，

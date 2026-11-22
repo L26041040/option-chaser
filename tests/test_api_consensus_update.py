@@ -173,6 +173,45 @@ def test_next_trading_day_fetches_again(monkeypatch):
     assert len(source.calls) == 100
 
 
+
+def test_friday_success_is_not_refetched_over_the_weekend(monkeypatch):
+    # 「同一交易日不再抓」：週五成功，週六、週日仍屬週五這個交易日；週一才重抓。
+    source = ScriptedSource()
+    client, _ = _client(source, policy=RefreshPolicy(call_spacing_seconds=0, batch_size=50))
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 9, 25))   # 週五
+    _update(client)
+    assert len(source.calls) == 50
+    for weekend in (date(2026, 9, 26), date(2026, 9, 27)):
+        monkeypatch.setattr(main_module, "ny_today", lambda d=weekend: d)
+        body = _update(client)
+        assert body["processed_symbols"] == []
+        assert _sym(_status(client), "AAPL")["state"] == "done"
+        assert client.get("/api/cron/consensus-refresh", headers=CRON).json()["processed"] == 0
+    assert len(source.calls) == 50
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 9, 28))   # 週一
+    _update(client)
+    assert len(source.calls) == 100
+
+
+def test_retries_used_up_on_friday_resume_on_monday_not_saturday(monkeypatch):
+    clock = Clock()
+    source = ScriptedSource({"AAPL": ["fail"] * 10})
+    client, _ = _client(source, clock=clock,
+                        policy=RefreshPolicy(call_spacing_seconds=0, batch_size=50,
+                                             max_retries=0))
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 9, 25))   # 週五
+    _update(client)
+    aapl = _sym(_status(client), "AAPL")
+    assert aapl["state"] == "exhausted"
+    assert aapl["next_retry_at"] == "2026-09-28T04:00:00+00:00"   # 下一個交易日（週一）零時
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 9, 26))   # 週六
+    assert _sym(_status(client), "AAPL")["state"] == "exhausted"
+    assert client.post(UPDATE, json={"symbols": ["AAPL"]}).status_code == 409
+    assert source.calls.count("AAPL") == 1
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 9, 28))   # 週一
+    _update(client, ["AAPL"])
+    assert source.calls.count("AAPL") == 2
+
 # ---------- 失敗：冷卻、重試、上限、隔天恢復 ----------
 
 def test_failure_cooldown_retry_limit_and_next_day(monkeypatch):
@@ -249,6 +288,65 @@ def test_429_honours_retry_after_or_the_429_cooldown(retry_after, blocked, allow
     _update(client, ["AAPL"])
     assert source.calls.count("AAPL") == 2
 
+
+
+def _iso(epoch):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(int(epoch), timezone.utc).isoformat()
+
+
+def test_429_stops_the_run_at_once_and_pauses_every_later_call():
+    # 「遇到 429：有 Retry-After 就遵守，沒有就冷卻 30 分鐘」——對整個來源，
+    # 不是只對那一檔：同一次呼叫立刻停，後面的不再打上游。
+    clock = Clock()
+    third = sorted(SAMPLE)[2]
+    source = ScriptedSource({third: [("429", None)]})
+    client, _ = _client(source, clock=clock,
+                        policy=RefreshPolicy(call_spacing_seconds=0, batch_size=50))
+    body = _update(client)
+    assert len(source.calls) == 3 and source.calls[-1] == third
+    assert body["succeeded"] == 2 and body["failed"] == 1
+    assert body["stopped_reason"] == "rate_limited"
+    assert body["rate_limited_until"] == _iso(T0 + 1800)
+    assert "429" in body["message"]
+    assert len(body["remaining"]) == 47 and third not in body["remaining"]
+
+    clock.t = T0 + 1799                                # 冷卻中：續跑、cron、重試都不打上游
+    again = _update(client)
+    assert again["processed_symbols"] == [] and again["stopped_reason"] == "rate_limited"
+    assert again["rate_limited_until"] == _iso(T0 + 1800)
+    assert len(again["remaining"]) == 47
+    cron = client.get("/api/cron/consensus-refresh", headers=CRON).json()
+    assert cron["processed"] == 0 and cron["stopped_reason"] == "rate_limited"
+    r = client.post(UPDATE, json={"symbols": [body["remaining"][0]]})
+    assert r.status_code == 429
+    assert r.json()["detail"]["stage"] == "consensus_rate_limited"
+    assert r.json()["detail"]["rate_limited_until"] == _iso(T0 + 1800)
+    assert _status(client)["rate_limited_until"] == _iso(T0 + 1800)
+    assert len(source.calls) == 3
+
+    clock.t = T0 + 1801                                # 冷卻結束：照常續跑
+    resumed = _update(client)
+    assert resumed["stopped_reason"] is None and resumed["rate_limited_until"] is None
+    assert len(source.calls) == 3 + 48
+    assert _status(client)["rate_limited_until"] is None
+
+
+def test_source_wide_429_pause_honours_a_longer_retry_after():
+    clock = Clock()
+    first = sorted(SAMPLE)[0]
+    source = ScriptedSource({first: [("429", 3600)]})
+    client, _ = _client(source, clock=clock,
+                        policy=RefreshPolicy(call_spacing_seconds=0, batch_size=50))
+    body = _update(client)
+    assert source.calls == [first]
+    assert body["rate_limited_until"] == _iso(T0 + 3600)
+    clock.t = T0 + 3599
+    _update(client)
+    assert len(source.calls) == 1
+    clock.t = T0 + 3601                                # 其餘 49 檔＋冷卻已過的那一檔
+    _update(client)
+    assert len(source.calls) == 51
 
 # ---------- 每日上限 ----------
 
@@ -453,6 +551,27 @@ def test_retry_symbol_outside_the_update_universe_is_400():
     assert client.post(UPDATE, json={"symbols": ["ZZZZ"]}).status_code == 400
     assert source.calls == []
 
+
+
+def test_retry_symbols_are_normalised_before_the_universe_check():
+    source = ScriptedSource()
+    client, _ = _client(source)
+    body = _update(client, [" aapl ", "AAPL"])
+    assert body["processed_symbols"] == ["AAPL"]
+    assert source.calls == ["AAPL"]
+
+
+def test_409_names_every_symbol_that_cannot_be_retried():
+    source = ScriptedSource()
+    client, _ = _client(source, policy=RefreshPolicy(call_spacing_seconds=0, batch_size=50))
+    _update(client)                                     # 全部今天已成功
+    r = client.post(UPDATE, json={"symbols": ["AAPL", "MSFT"]})
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["symbol"] == "AAPL" and detail["state"] == "done"   # 舊欄位不變
+    assert [s["symbol"] for s in detail["skipped"]] == ["AAPL", "MSFT"]
+    assert {s["state"] for s in detail["skipped"]} == {"done"}
+    assert "AAPL" in detail["message"] and "MSFT" in detail["message"]
 
 # ---------- 契約樣本 ----------
 

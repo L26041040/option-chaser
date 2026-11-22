@@ -5,7 +5,7 @@
  * ／未來規劃；自訂只能挑白名單、不能填任意 endpoint；同一 Provider 的
  * token 不要求輸入兩次。
  */
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -891,6 +891,29 @@ describe("OG-11（#322）：桌面版左側 subnav（手機版單欄堆疊零改
 
       expect(screen.getByRole("tab", { name: "機會搜尋" }))
         .toHaveAttribute("aria-selected", "true");
+      expect(await screen.findByRole("region", { name: "機會搜尋" })).toBeInTheDocument();
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
+  it("桌面：已經在設定頁時把網址改成 #/settings/opportunity，也會切到「機會搜尋」分頁",
+     async () => {
+    goDesktop();
+    window.location.hash = "#/settings";
+    try {
+      mockApi([view()], { role: "superuser" });
+      render(<Settings />);
+      await readyDesktop();
+      expect(screen.getByRole("tab", { name: "一般" })).toHaveAttribute("aria-selected", "true");
+
+      act(() => {
+        window.location.hash = "#/settings/opportunity";
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+      });
+
+      await waitFor(() => expect(screen.getByRole("tab", { name: "機會搜尋" }))
+        .toHaveAttribute("aria-selected", "true"));
       expect(await screen.findByRole("region", { name: "機會搜尋" })).toBeInTheDocument();
     } finally {
       window.location.hash = "";

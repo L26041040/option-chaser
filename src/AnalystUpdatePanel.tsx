@@ -31,10 +31,14 @@ import {
   builtCount,
   capReached,
   dataPhase,
+  formatWait,
+  inScopeTotal,
   isFailed,
   nextAutoUpdate,
+  outOfScopeText,
   progressText,
   retryGate,
+  secondsUntil,
   type DataPhase,
   type RetryContext,
 } from "./consensusUpdate";
@@ -71,6 +75,7 @@ const PHASE_LABELS: Record<DataPhase["kind"], string> = {
   ready: "就緒",
   building: "建立中",
   failed: "更新失敗",
+  rate_limited: "來源限流中",
   capped: "已達今日上限",
 };
 
@@ -112,12 +117,16 @@ export default function AnalystUpdatePanel({
 
   const data = status.state === "ok" ? status.data : null;
   const failed = data ? data.symbols.filter(isFailed) : [];
-  const now = useNow(failed.some((s) => s.state === "cooling"));
+  const pausedUntil = data?.rate_limited_until ?? null;
+  const now = useNow(failed.some((s) => s.state === "cooling")
+                     || secondsUntil(pausedUntil, Date.now()) > 0);
   const busy = run.state === "running" || retrying !== null;
-  const phase = dataPhase(consensus, data);
-  const retryCtx: RetryContext = { capReached: capReached(data), today: data?.today };
+  const phase = dataPhase(consensus, data, now);
+  const retryCtx: RetryContext = { capReached: capReached(data), today: data?.today,
+                                   rateLimitedUntil: pausedUntil };
   const built = builtCount(consensus);
-  const total = consensus.universe.symbols;
+  const total = inScopeTotal(consensus);
+  const outOfScope = outOfScopeText(consensus);
   const selected = consensus.items.filter((i) => i.gate.selected).length;
   const updateLabel = phase.kind !== "building" ? "更新分析師資料"
     : built === 0 ? "開始建立" : "繼續更新";
@@ -128,9 +137,10 @@ export default function AnalystUpdatePanel({
       for (;;) {
         const r = await updateConsensus();
         if (!mounted.current) return;
-        if (r.stopped_reason === "daily_cap") {
+        if (r.stopped_reason === "daily_cap" || r.stopped_reason === "rate_limited") {
           setRun({ state: "stopped", progress: r.progress,
-                   message: r.message ?? "今日上游呼叫已達每日上限" });
+                   message: r.message ?? (r.stopped_reason === "daily_cap"
+                     ? "今日上游呼叫已達每日上限" : "資料來源限流（429）") });
           break;
         }
         // 沒有可續跑的、或這次一檔都沒處理（防無窮迴圈）就結束。
@@ -191,14 +201,16 @@ export default function AnalystUpdatePanel({
         </div>
       )}
       <p className={`notice opp-phase${phase.kind === "ready" ? "" : " warn"}`} role="status">
-        {phaseText(phase, { built, total, selected, today: data?.today })}
+        {phaseText(phase, { built, total, selected, today: data?.today, now })}
       </p>
+      {outOfScope && <p className="caption">{outOfScope}</p>}
       <div className="opp-actions">
         <button
           type="button"
           className={phase.kind === "ready" ? "pbtn line" : "pbtn"}
           onClick={() => void update()}
-          disabled={busy || data === null || phase.kind === "capped"}
+          disabled={busy || data === null || phase.kind === "capped"
+                    || phase.kind === "rate_limited"}
         >
           {run.state === "running" ? "更新中……" : updateLabel}
         </button>
@@ -239,8 +251,9 @@ function StatusFact({ label, children }: { label: string; children: ReactNode })
 /** 每個狀態一句話：現在怎樣、下一步做什麼。 */
 function phaseText(
   phase: DataPhase,
-  { built, total, selected, today }:
-    { built: number; total: number; selected: number; today: string | undefined },
+  { built, total, selected, today, now }:
+    { built: number; total: number; selected: number; today: string | undefined;
+      now: number },
 ): string {
   switch (phase.kind) {
     case "ready":
@@ -253,6 +266,8 @@ function phaseText(
         : `資料建立中：已建立 ${built}／${total} 檔。按「繼續更新」接著建立；已建立的入選股現在就可以搜尋。`;
     case "failed":
       return `${phase.failed} 檔更新失敗：原因與重試方式列在下方。其餘股票照常可以搜尋。`;
+    case "rate_limited":
+      return `資料來源限流（429），所有更新暫停，還要約 ${formatWait(secondsUntil(phase.until, now))}才會再更新或重試。已建立的資料照常可以搜尋。`;
     case "capped":
       return `今日上游呼叫已達每日上限（${phase.calls}／${phase.cap} 次），今天不能再更新或重試，${nextAutoUpdate(today)}。已建立的資料照常可以搜尋。`;
   }

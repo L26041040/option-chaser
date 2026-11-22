@@ -12,6 +12,8 @@
     "with_data": 5,
     "insufficient": 1,
     "not_built": 0,
+    "out_of_scope": 0,
+    "out_of_scope_symbols": [],
     "coverage": {
       "complete": 1,
       "partial": 2,

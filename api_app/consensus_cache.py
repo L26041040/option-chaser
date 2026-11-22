@@ -8,7 +8,9 @@
    - **成功**的 symbol 同一交易日不再抓；**失敗**的同一交易日內可以有限次
      重試（`RefreshPolicy`，LIVE-T3／#398 經 LIVE-TICKET-CORRECTION-001
      修正）：每次重試前要過冷卻；429 有 `Retry-After` 時取它和冷卻較長者，
-     沒有就用 429 專用冷卻；重試用完改到下一個美東日；
+     沒有就用 429 專用冷卻；重試用完改到下一個交易日（`trading_day()`：
+     週末算前一個週五）；遇到 429 整個來源暫停（`pause_source()`），這次
+     立刻停、暫停期間不打上游；
    - 每次上游呼叫先在全站共用的每日上限（沿用 `rate_limits` 計數）扣一次——
      重試也算，扣不到就停止並回報，不打上游；
    - 同一 symbol 同一時間只有一次上游呼叫：先取「處理中」標記（有逾時），
@@ -158,6 +160,14 @@ def refresh_universe(storage: Storage, *,
     return list(dict.fromkeys([*sample, *sorted(custom)]))[:cap]
 
 
+def out_of_scope(search_symbols: Sequence[str],
+                 refresh_symbols: Sequence[str]) -> list[str]:
+    """使用者母體裡、不在每日更新母體（`refresh_universe()`，有上限）的代號——
+    它們永遠不會被更新，進度與「建立中」不能等它們（母體順序）。"""
+    allowed = set(refresh_symbols)
+    return [s for s in dict.fromkeys(search_symbols) if s not in allowed]
+
+
 @dataclass(frozen=True)
 class RefreshPolicy:
     """更新的重試／限流參數（LIVE-T3／#398，全部可設定、有明確預設）。
@@ -206,6 +216,14 @@ DEFAULT_POLICY = RefreshPolicy()
 NOT_RETRYABLE_STAGE = "consensus_not_retryable"
 DAILY_CAP_STAGE = "consensus_daily_cap"
 DAILY_CAP_MESSAGE = "今日分析師資料的上游呼叫已達每日上限，下一個交易日自動恢復"
+RATE_LIMITED_STAGE = "consensus_rate_limited"
+RATE_LIMITED_MESSAGE = ("資料來源回應限流（429），所有分析師資料更新暫停到冷卻結束，"
+                        "期間不會再呼叫來源")
+# 429 後的全站暫停：存在既有的「處理中」標記表裡一個保留鍵（不是合法代號，
+# 不會跟任何 symbol 撞），到期時間＝暫停結束——不用新表，memory／Postgres
+# 同一套語意。
+_PAUSE_KEY = "!rate_limited:{source}"
+_PAUSE_HOLDER = "source-pause"
 _UPSTREAM_SCOPE = "consensus_upstream"
 _DAY_SECONDS = 86400
 _EASTERN = ZoneInfo("America/New_York")
@@ -229,9 +247,27 @@ def _epoch(iso: str) -> float:
 
 
 def _day_start(day: date) -> datetime:
-    """美東 `day` 的零時（UTC）——「下一個交易日再試」與每日上限的界線。"""
+    """美東 `day` 的零時（UTC）——「下一個交易日再試」與每日上限（仍以美東
+    日曆日計）的界線。"""
     return datetime.combine(day, datetime.min.time(), tzinfo=_EASTERN).astimezone(
         timezone.utc)
+
+
+def trading_day(day: date) -> date:
+    """美東日期 `day` 所屬的交易日：週六、週日算前一個週五。本站不維護美股
+    假日表（比照 `option_chaser.ivpipeline._most_recent_trading_day_before`），
+    假日照平日算——最多多抓一次，不會漏抓。"""
+    return day - timedelta(days=max(0, day.weekday() - 4))
+
+
+def next_trading_day(day: date) -> date:
+    """`day` 之後的第一個交易日（週五、週六、週日 → 下週一）。"""
+    nxt = trading_day(day) + timedelta(days=1)
+    return nxt + timedelta(days=7 - nxt.weekday()) if nxt.weekday() >= 5 else nxt
+
+
+def _same_trading_day(attempted_day: str, today: date) -> bool:
+    return trading_day(date.fromisoformat(attempted_day)) == trading_day(today)
 
 
 def _upstream_bucket(source: AnalystSource, today: date,
@@ -243,6 +279,34 @@ def _upstream_bucket(source: AnalystSource, today: date,
                            policy.daily_upstream_cap)
 
 
+def _rate_limit_cooldown(policy: RefreshPolicy, retry_after: int | None) -> int:
+    """429 的冷卻秒數：有 `Retry-After` 取它和一般冷卻較長者，沒有用 429 專用
+    冷卻（預設 30 分）。單檔的下次重試與全站暫停用同一條規則。"""
+    if retry_after is None:
+        return policy.rate_limit_cooldown_seconds
+    return max(policy.retry_cooldown_seconds, retry_after)
+
+
+def rate_limited_until(storage: Storage, source: AnalystSource, *,
+                       now: float) -> float | None:
+    """這個來源的 429 全站暫停到什麼時候（epoch 秒）；沒有暫停回 `None`。"""
+    return storage.consensus_refresh_leases(now=now).get(
+        _PAUSE_KEY.format(source=source.name))
+
+
+def pause_source(storage: Storage, source: AnalystSource, *, now: float,
+                 seconds: float) -> None:
+    """429 之後暫停這個來源的所有上游呼叫 `seconds` 秒；已經有更晚結束的暫停
+    就沿用它（只延長、不縮短）。"""
+    current = rate_limited_until(storage, source, now=now)
+    if current is not None and current >= now + seconds:
+        return
+    key = _PAUSE_KEY.format(source=source.name)
+    storage.release_consensus_refresh_lease(key, _PAUSE_HOLDER)
+    storage.acquire_consensus_refresh_lease(key, _PAUSE_HOLDER, now=now,
+                                            ttl_seconds=seconds)
+
+
 def _own(st: ConsensusRefreshState | None,
          source: AnalystSource) -> ConsensusRefreshState | None:
     """只認目前來源寫的狀態——換來源等於從沒試過。"""
@@ -251,10 +315,11 @@ def _own(st: ConsensusRefreshState | None,
 
 def _classify(st: ConsensusRefreshState | None, today: date, now: float,
               policy: RefreshPolicy) -> str:
-    """一檔現在的狀態（不含處理中標記）：`pending`（今天還沒試過）／`done`
-    （今天已成功）／`cooling`（失敗、冷卻中）／`retry_ready`（失敗、冷卻已過、
-    還有重試次數）／`exhausted`（今天重試用完）。"""
-    if st is None or st.attempted_day != today.isoformat():
+    """一檔現在的狀態（不含處理中標記）：`pending`（這個交易日還沒試過）／
+    `done`（這個交易日已成功）／`cooling`（失敗、冷卻中）／`retry_ready`（失敗、
+    冷卻已過、還有重試次數）／`exhausted`（這個交易日重試用完）。「今天」以
+    交易日（`trading_day()`）比較：週五成功，週末不重抓。"""
+    if st is None or not _same_trading_day(st.attempted_day, today):
         return "pending"
     if st.error is None:
         return "done"
@@ -274,9 +339,10 @@ def _skip(symbol: str, state: str, st: ConsensusRefreshState | None) -> dict:
 def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
                  today: date, rules: ConsensusRules, now: float,
                  previous: ConsensusRefreshState | None,
-                 policy: RefreshPolicy) -> str:
-    """抓一檔、存結果；回傳 `"ok"`（成功算出 Snapshot，不論資料品質）或
-    `"failed"`（來源回報錯誤或丟例外）。失敗時依重試規則寫下次可重試時間。"""
+                 policy: RefreshPolicy) -> tuple[str, int | None]:
+    """抓一檔、存結果；回傳 (`"ok"`（成功算出 Snapshot，不論資料品質）／
+    `"failed"`（來源回報錯誤或丟例外）／`"rate_limited"`（429），429 的冷卻
+    秒數)。失敗時依重試規則寫下次可重試時間。"""
     rate_limited, retry_after = False, None
     try:
         result = source.fetch(symbol, today)
@@ -287,7 +353,8 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
     at = datetime.fromtimestamp(int(now), timezone.utc)
     day = today.isoformat()
     attempts = (previous.attempts + 1
-                if previous is not None and previous.attempted_day == day else 1)
+                if previous is not None and _same_trading_day(previous.attempted_day, today)
+                else 1)
     if error is None:
         snap = consensus.compute_snapshot(
             result.records, result.splits, today, rules, symbol=symbol,
@@ -302,10 +369,10 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
         next_retry_at, last_success_at = None, at.isoformat()
     else:
         if attempts >= 1 + policy.max_retries:
-            # 重試用完：改到下一個美東日（那天 attempts 歸零重算）。
-            next_retry_at = _day_start(today + timedelta(days=1)).isoformat()
-        elif rate_limited and retry_after is None:
-            next_retry_at = _iso(int(now) + policy.rate_limit_cooldown_seconds)
+            # 重試用完：改到下一個交易日（那天 attempts 歸零重算）。
+            next_retry_at = _day_start(next_trading_day(today)).isoformat()
+        elif rate_limited:
+            next_retry_at = _iso(int(now) + _rate_limit_cooldown(policy, retry_after))
         else:
             next_retry_at = _iso(int(now) + max(policy.retry_cooldown_seconds,
                                                 retry_after or 0))
@@ -314,7 +381,11 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
         symbol=symbol, source=source.name, attempted_day=day,
         attempted_at=at.isoformat(), error=error, attempts=attempts,
         next_retry_at=next_retry_at, last_success_at=last_success_at))
-    return "ok" if error is None else "failed"
+    if error is None:
+        return "ok", None
+    if rate_limited:
+        return "rate_limited", _rate_limit_cooldown(policy, retry_after)
+    return "failed", None
 
 
 def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[str],
@@ -330,7 +401,12 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
 
     回傳本次統計、`remaining`（可以抓、這次沒輪到的，依處理順序）、
     `skipped`（現在不能抓的與原因）、`stopped_reason`（`"daily_cap"`＝每日
-    上限已滿，`message` 說明）與今天已用的上游呼叫數。"""
+    上限已滿；`"rate_limited"`＝來源回 429，或 429 的全站暫停還沒結束，
+    `rate_limited_until` 是暫停結束時間；`message` 說明）與今天已用的上游
+    呼叫數。
+
+    429 不只冷卻那一檔：整個來源暫停（`pause_source()`），這次呼叫立刻停下、
+    剩下的不打；暫停期間的續跑、cron 與重試都不呼叫上游。"""
     day = today.isoformat()
     states = storage.consensus_refresh_states()
     leases = storage.consensus_refresh_leases(now=clock())
@@ -347,7 +423,8 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
         else:
             skipped.append(_skip(symbol, state, own[symbol]))
     pending.sort(key=lambda s: (own[s].attempted_day if own[s] else "", s))
-    done_today = sum(1 for s in wanted if own[s] and own[s].attempted_day == day)
+    done_today = sum(1 for s in wanted
+                     if own[s] and _same_trading_day(own[s].attempted_day, today))
 
     holder = uuid.uuid4().hex
     bucket = _upstream_bucket(source, today, policy)
@@ -355,9 +432,14 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
     processed: list[str] = []
     stopped_reason = message = None
     index = 0
+    paused_until = None
     while index < len(pending):
         if processed and (budget_exhausted() or (batch_limit is not None
                                                  and len(processed) >= batch_limit)):
+            break
+        paused_until = rate_limited_until(storage, source, now=clock())
+        if paused_until is not None:
+            stopped_reason, message = "rate_limited", RATE_LIMITED_MESSAGE
             break
         symbol = pending[index]
         if not storage.acquire_consensus_refresh_lease(
@@ -380,8 +462,10 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
             if calls and policy.call_spacing_seconds > 0 and not source.is_fixture:
                 sleep(policy.call_spacing_seconds)
             calls += 1
-            outcome = _refresh_one(storage, source, symbol, today, rules, clock(),
-                                   current, policy)
+            outcome, pause_seconds = _refresh_one(storage, source, symbol, today,
+                                                  rules, clock(), current, policy)
+            if outcome == "rate_limited":
+                pause_source(storage, source, now=clock(), seconds=pause_seconds)
         finally:
             storage.release_consensus_refresh_lease(symbol, holder)
         processed.append(symbol)
@@ -390,29 +474,40 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
             succeeded += 1
         else:
             failed += 1
+        if outcome == "rate_limited":
+            paused_until = rate_limited_until(storage, source, now=clock())
+            stopped_reason, message = "rate_limited", RATE_LIMITED_MESSAGE
+            break
     return {"source": source.name, "as_of": day, "processed": len(processed),
             "processed_symbols": processed,
             "succeeded": succeeded, "failed": failed,
             "already_attempted_today": done_today,
             "remaining": pending[index:], "skipped": skipped,
             "stopped_reason": stopped_reason, "message": message,
+            "rate_limited_until": _iso(paused_until) if paused_until is not None else None,
             "upstream_calls_today": storage.rate_limit_count(bucket),
             "daily_cap": policy.daily_upstream_cap}
 
 
 def refresh_status(storage: Storage, source: AnalystSource | None,
                    symbols: Sequence[str], today: date, *, now: float,
-                   policy: RefreshPolicy = DEFAULT_POLICY) -> dict:
+                   policy: RefreshPolicy = DEFAULT_POLICY,
+                   search_symbols: Sequence[str] = ()) -> dict:
     """狀態 API（`GET /api/opportunity/consensus/status`，只限 SU／SA）：每檔
     最後成功／嘗試時間、失敗原因、今日已重試次數、下次可重試時間；全體進度、
-    資料日期與今天已用的上游呼叫數。"""
+    資料日期與今天已用的上游呼叫數。
+
+    `symbols` 是每日更新母體，進度只算它；`search_symbols`（這位使用者的
+    母體）裡超出更新母體的另外列在 `out_of_scope`／`out_of_scope_symbols`。"""
+    outside = out_of_scope(search_symbols, symbols) if source is not None else []
     base = {"today": today.isoformat(), "now": _iso(now), "policy": policy.view(),
-            "daily_cap": policy.daily_upstream_cap}
+            "daily_cap": policy.daily_upstream_cap,
+            "out_of_scope": len(outside), "out_of_scope_symbols": outside}
     if source is None:
         return {**base, "source": {"configured": False, "name": None,
                                    "is_fixture": False},
                 "progress": _progress([]), "symbols": [], "data_as_of": None,
-                "upstream_calls_today": 0}
+                "upstream_calls_today": 0, "rate_limited_until": None}
     wanted = list(dict.fromkeys(symbols))
     states = storage.consensus_refresh_states()
     leases = storage.consensus_refresh_leases(now=now)
@@ -421,7 +516,8 @@ def refresh_status(storage: Storage, source: AnalystSource | None,
     for symbol in wanted:
         st = _own(states.get(symbol), source)
         state = "in_progress" if symbol in leases else _classify(st, today, now, policy)
-        attempts_today = st.attempts if st and st.attempted_day == today.isoformat() else 0
+        attempts_today = (st.attempts if st and _same_trading_day(st.attempted_day, today)
+                          else 0)
         rec = snaps.get(symbol)
         rows.append({
             "symbol": symbol, "state": state,
@@ -440,7 +536,9 @@ def refresh_status(storage: Storage, source: AnalystSource | None,
             "progress": _progress(rows), "symbols": rows,
             "data_as_of": max((r["as_of"] for r in rows if r["as_of"]), default=None),
             "upstream_calls_today": storage.rate_limit_count(
-                _upstream_bucket(source, today, policy))}
+                _upstream_bucket(source, today, policy)),
+            "rate_limited_until": (_iso(paused) if (paused := rate_limited_until(
+                storage, source, now=now)) is not None else None)}
 
 
 def _progress(rows: Sequence[dict]) -> dict:
@@ -570,9 +668,14 @@ def selected_items(storage: Storage, source: AnalystSource,
 def consensus_view(storage: Storage, source: AnalystSource | None,
                    opportunity: dict, today: date, *,
                    rules: ConsensusRules = DEFAULT_RULES,
-                   target_month_rule: str = DEFAULT_TARGET_MONTH_RULE) -> dict:
+                   target_month_rule: str = DEFAULT_TARGET_MONTH_RULE,
+                   refresh_symbols: Sequence[str] | None = None) -> dict:
     """`GET /api/opportunity/consensus` 的完整回應。`opportunity` 是
-    `opportunity_settings.effective()` 的輸出（門檻為百分比 0–100）。"""
+    `opportunity_settings.effective()` 的輸出（門檻為百分比 0–100）。
+
+    `refresh_symbols`＝每日更新母體（`refresh_universe()`）：使用者母體裡不在
+    其中的代號永遠不會被更新，不算 `not_built`，另列在 `out_of_scope`／
+    `out_of_scope_symbols`。`None`＝不區分（全部視為在更新範圍內）。"""
     universe = search_universe.resolve_universe(opportunity)
     thresholds = {"percentile_max": opportunity["percentile_max"],
                   "dispersion_max": opportunity["dispersion_max"]}
@@ -584,6 +687,9 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
                                 target_month_rule)
         source_view = {"configured": True, "name": source.name,
                        "is_fixture": bool(source.is_fixture)}
+    outside = (out_of_scope(universe.symbols, refresh_symbols)
+               if refresh_symbols is not None and source is not None else [])
+    outside_set = set(outside)
     with_data = [i for i in items if i["status"] not in ("no_data", "source_error")]
     coverage = {c: 0 for c in ("complete", "partial", "unknown")}
     for i in with_data:
@@ -598,8 +704,12 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
                                          if i["status"] in _INSUFFICIENT),
                      # 還沒建立（沒有快取、也還沒失敗過）的檔數（LIVE-T4／
                      # #400）：搜尋頁據此顯示「資料建立中」，不顯示空結果。
+                     # 超出每日更新母體的不算（它們不會被建立，`out_of_scope`）。
                      "not_built": sum(1 for i in items
-                                      if i["reasons"] == [_NOT_REFRESHED]),
+                                      if i["reasons"] == [_NOT_REFRESHED]
+                                      and i["symbol"] not in outside_set),
+                     "out_of_scope": len(outside),
+                     "out_of_scope_symbols": outside,
                      "coverage": coverage,
                      "as_of": max((i["as_of"] for i in items if i["as_of"]),
                                   default=None)},

@@ -92,6 +92,25 @@ def test_weekly_closes_are_passed_on_dated_by_when_the_close_is_known():
     assert all(d.weekday() == 4 for d, _ in result.weekly_closes)
 
 
+def test_mid_week_fetch_last_close_is_not_visible_before_the_fetch_day():
+    # 週三（11-18）抓取：最後一根仍標週一（11-16），收盤卻是週三的最新價。
+    # 11-17 的取樣點不能看到它；它最早在抓取日才可得。前一根照常標週五。
+    from option_chaser.data.yahoo_analyst import closes_by_close_date
+    raw = ((date(2026, 11, 9), Decimal("100")), (date(2026, 11, 16), Decimal("120")))
+    out = closes_by_close_date(raw, available_on=date(2026, 11, 18))
+    assert out == ((date(2026, 11, 13), Decimal("100")),
+                   (date(2026, 11, 18), Decimal("120")))
+    assert [c for d, c in out if d <= date(2026, 11, 17)] == [Decimal("100")]
+
+
+def test_last_weekly_close_is_dated_no_earlier_than_the_fetch_day():
+    # 同一份 AVGO 回應在下週一（11-23）才抓：最後一根（11-20 週五的價）標 11-23。
+    transport = ReplayTransport()
+    result = YahooAnalystSource(transport=transport).fetch("AVGO", date(2026, 11, 23))
+    assert result.weekly_closes[-1][0] == date(2026, 11, 23)
+    assert result.weekly_closes[-2][0] == date(2026, 11, 20)
+
+
 # --- 分割基準：Yahoo 的目標價有些已換成分割後的數字、有些沒有 ---------------
 
 def _record(result, firm, published_on):

@@ -270,18 +270,23 @@ def split_basis_through(target: RawTarget, splits, weekly_closes) -> date | None
 _WEEK_CLOSE_OFFSET_DAYS = 4      # 週一標記的週線，收盤是當週最後一個交易日（≤ 週五）
 
 
-def closes_by_close_date(weekly_closes) -> tuple[tuple[date, Decimal], ...]:
+def closes_by_close_date(weekly_closes, *, available_on: date | None = None
+                         ) -> tuple[tuple[date, Decimal], ...]:
     """週線收盤改標成「收盤可得日」，給共識引擎的 `weekly_closes` 用（不用未來資訊）。
 
     Yahoo 的週線以**當週週一**標記，收盤卻是當週最後一個交易日的價格；照原
     標記篩「t 以前」會偷看到 t 之後最多 4 天的收盤。改成標記日 + 4 天（週五），
-    但不晚於下一根的標記日。最後一根照原標記（Yahoo 把最新價放在最新交易日，
-    例：週末抓取時多出一根週五標記的收盤）。"""
+    但不晚於下一根的標記日。最後一根的收盤是**抓取當下的最新價**（週中抓取時
+    它仍標週一；週末抓取時 Yahoo 多補一根週五標記的收盤），所以它的可得日不早
+    於抓取日 `available_on`（美東）——取原標記與抓取日較晚者，保守。
+    `available_on` 為 None 時最後一根照原標記（只供沒有抓取日的離線檢查）。"""
     out = []
     for i, (d, c) in enumerate(weekly_closes):
         if i + 1 < len(weekly_closes):
             nxt = weekly_closes[i + 1][0]
             d = min(date.fromordinal(d.toordinal() + _WEEK_CLOSE_OFFSET_DAYS), nxt)
+        elif available_on is not None:
+            d = max(d, available_on)
         out.append((d, c))
     return tuple(out)
 

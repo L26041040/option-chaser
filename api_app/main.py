@@ -20,7 +20,7 @@ import time
 from contextvars import ContextVar
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -3973,7 +3973,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         return consensus_cache.consensus_view(
             _db(), analyst_source, opportunity, ny_today(),
             rules=_effective_consensus_rules,
-            target_month_rule=_effective_target_month_rule)
+            target_month_rule=_effective_target_month_rule,
+            refresh_symbols=(_consensus_update_universe()
+                             if analyst_source is not None else None))
 
     # ---------- 機會搜尋：更新分析師資料（LIVE-T3／#398） ----------
 
@@ -3985,9 +3987,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         回應帶全體進度（`progress`）。
 
         指定 `symbols`（重試）時：不在更新母體裡 400；一檔都不能抓時照實
-        拒絕、不打上游——每日上限已滿 429（`consensus_daily_cap`），其餘
+        拒絕、不打上游——每日上限已滿 429（`consensus_daily_cap`），來源 429
+        後的全站暫停中 429（`consensus_rate_limited`，帶 `rate_limited_until`），其餘
         （今天已成功、冷卻中、重試用完、別人正在處理）409
-        （`consensus_not_retryable`，帶 `state`／`next_retry_at`）。"""
+        （`consensus_not_retryable`，帶第一檔的 `state`／`next_retry_at` 與
+        每一檔的 `skipped`）。代號先去空白、轉大寫再比對更新母體。"""
         _require_opportunity_role()
         if analyst_source is None:
             raise HTTPException(status_code=409,
@@ -3995,7 +3999,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         universe = _consensus_update_universe()
         symbols = universe
         if body.symbols is not None:
-            symbols = list(dict.fromkeys(body.symbols))
+            symbols = list(dict.fromkeys(s.strip().upper() for s in body.symbols))
             allowed = set(universe)
             outside = [s for s in symbols if s not in allowed]
             if outside:
@@ -4005,6 +4009,11 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         result = _refresh_consensus(
             symbols, batch_limit=_effective_consensus_refresh_policy.batch_size)
         if body.symbols is not None and not result["processed_symbols"]:
+            if result["stopped_reason"] == "rate_limited":
+                raise HTTPException(status_code=429, detail={
+                    "stage": consensus_cache.RATE_LIMITED_STAGE,
+                    "message": result["message"],
+                    "rate_limited_until": result["rate_limited_until"]})
             if result["stopped_reason"] == "daily_cap":
                 raise HTTPException(status_code=429, detail={
                     "stage": consensus_cache.DAILY_CAP_STAGE,
@@ -4012,12 +4021,16 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                     "upstream_calls_today": result["upstream_calls_today"],
                     "daily_cap": result["daily_cap"]})
             if result["skipped"]:
+                # `symbol`／`state`／`next_retry_at` 沿用第一檔（相容舊前端）；
+                # `skipped` 列出每一檔與原因。
                 skip = result["skipped"][0]
                 raise HTTPException(status_code=409, detail={
                     "stage": consensus_cache.NOT_RETRYABLE_STAGE,
-                    "message": f"{skip['symbol']}：{skip['message']}",
+                    "message": "；".join(f"{s['symbol']}：{s['message']}"
+                                        for s in result["skipped"]),
                     "symbol": skip["symbol"], "state": skip["state"],
-                    "next_retry_at": skip["next_retry_at"]})
+                    "next_retry_at": skip["next_retry_at"],
+                    "skipped": result["skipped"]})
         status = _consensus_status(universe)
         return {**result, "progress": status["progress"]}
 
@@ -4026,13 +4039,20 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         """更新狀態（只限 SU／SA）：每檔最後成功／嘗試時間、失敗原因、今日已
         重試次數、下次可重試時間；全體進度、資料日期、今日上游呼叫數與參數。"""
         _require_opportunity_role()
+        if analyst_source is None:
+            return _consensus_status([])
+        stored = _db().get_settings(owner=identity_resolver())
+        opportunity = opportunity_settings.effective(
+            stored.opportunity_search if stored else None)
         return _consensus_status(
-            _consensus_update_universe() if analyst_source is not None else [])
+            _consensus_update_universe(),
+            search_symbols=search_universe.resolve_universe(opportunity).symbols)
 
-    def _consensus_status(universe: list[str]) -> dict:
+    def _consensus_status(universe: list[str], *,
+                          search_symbols: Sequence[str] = ()) -> dict:
         return consensus_cache.refresh_status(
             _db(), analyst_source, universe, ny_today(), now=_clock(),
-            policy=_effective_consensus_refresh_policy)
+            policy=_effective_consensus_refresh_policy, search_symbols=search_symbols)
 
     @app.get("/api/opportunity/consensus-detail/{symbol}")
     def opportunity_consensus_detail(symbol: str) -> dict:

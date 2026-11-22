@@ -698,6 +698,21 @@ def test_consensus_refresh_lease_release_only_by_its_holder(storage):
                                                    ttl_seconds=120) is True
 
 
+
+def test_consensus_source_rate_limit_pause_is_shared_and_expires(storage):
+    """429 後的全站暫停（LIVE-T3／#398）存在既有的處理中標記表，不用新表。"""
+    from api_app import consensus_cache
+
+    class _Src:
+        name = "yahoo-udh"
+
+    assert consensus_cache.rate_limited_until(storage, _Src, now=1000.0) is None
+    consensus_cache.pause_source(storage, _Src, now=1000.0, seconds=1800)
+    assert consensus_cache.rate_limited_until(storage, _Src, now=2799.0) == 2800.0
+    assert consensus_cache.rate_limited_until(storage, _Src, now=2800.0) is None
+    consensus_cache.pause_source(storage, _Src, now=2800.0, seconds=60)
+    assert consensus_cache.rate_limited_until(storage, _Src, now=2801.0) == 2860.0
+
 def test_rate_limit_count_reads_the_bucket_without_consuming(storage):
     bucket = RateLimitBucket("consensus_upstream", "yahoo-udh", 86400, 1_790_000_000, 2)
     assert storage.rate_limit_count(bucket) == 0
