@@ -20,6 +20,10 @@
       "schedule": "0 12 * * *"
     },
     {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
       "path": "/api/cron/daily-digest",
       "schedule": "0 13 * * *"
     }

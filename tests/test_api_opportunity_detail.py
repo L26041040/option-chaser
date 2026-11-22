@@ -1,4 +1,4 @@
-"""LIVE-T2（#399）：個股共識詳細資料端點 `GET /api/opportunity/consensus/{symbol}`。
+"""LIVE-T2（#399）：個股共識詳細資料端點 `GET /api/opportunity/consensus-detail/{symbol}`。
 
 - 只限 SU／SA（Normal 403）；只讀全站共識快取，**不打上游**。
 - 內容：目前有效集合（券商、原始目標價、發布日、分割換算後的值）、平均／
@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from api_app import main as main_module
 from api_app.analyst_source import FixtureAnalystSource, YahooAnalystSource
+from api_app.consensus_cache import RefreshPolicy
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.consensus import ConsensusRules
@@ -43,7 +44,8 @@ def _client(storage, source, *, role="superuser", owner="solo"):
         grant_role(storage, role, owner_id=owner)
     return TestClient(create_app(
         identity_resolver=lambda: owner, storage=storage, analyst_source=source,
-        cron_secret="test-secret", consensus_rules=ConsensusRules(aliases=FIRM_ALIASES)))
+        cron_secret="test-secret", consensus_rules=ConsensusRules(aliases=FIRM_ALIASES),
+        consensus_refresh_policy=RefreshPolicy(call_spacing_seconds=0)))
 
 
 @pytest.fixture
@@ -64,7 +66,7 @@ def cached(monkeypatch):
 
 
 def _detail(client, symbol):
-    r = client.get(f"/api/opportunity/consensus/{symbol}")
+    r = client.get(f"/api/opportunity/consensus-detail/{symbol}")
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -130,7 +132,7 @@ def test_insufficient_stock_shows_concrete_reasons_and_is_never_selected(
 def test_detail_reads_the_cache_only_and_never_calls_upstream(cached):
     client = _client(cached, NoUpstream())
     for symbol in ("NVDA", "AAPL", "BABA", "ZZZQ"):
-        assert client.get(f"/api/opportunity/consensus/{symbol}").status_code == 200
+        assert client.get(f"/api/opportunity/consensus-detail/{symbol}").status_code == 200
 
 
 def test_symbol_never_refreshed_says_so_with_no_numbers(cached):
@@ -145,13 +147,13 @@ def test_symbol_never_refreshed_says_so_with_no_numbers(cached):
 def test_lowercase_symbol_is_normalised_and_garbage_is_rejected(cached):
     client = _client(cached, NoUpstream())
     assert _detail(client, "nvda")["item"]["symbol"] == "NVDA"
-    assert client.get("/api/opportunity/consensus/%3Cscript%3E").status_code == 400
-    assert client.get("/api/opportunity/consensus/" + "A" * 20).status_code == 400
+    assert client.get("/api/opportunity/consensus-detail/%3Cscript%3E").status_code == 400
+    assert client.get("/api/opportunity/consensus-detail/" + "A" * 20).status_code == 400
 
 
 def test_normal_user_is_refused(cached):
     client = _client(cached, NoUpstream(), role="normal", owner="someone-else")
-    r = client.get("/api/opportunity/consensus/NVDA")
+    r = client.get("/api/opportunity/consensus-detail/NVDA")
     assert r.status_code == 403
 
 

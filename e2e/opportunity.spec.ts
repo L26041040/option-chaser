@@ -20,6 +20,8 @@ const consensus = contract("opportunity_consensus_sample.json");
 const search = contract("opportunity_search_sample.json");
 const detail = contract("opportunity_detail_sample.json");
 const sampleRow = contract("scenario_row_sample.json");
+const refreshStatus = contract("opportunity_consensus_status_sample.json");
+const refreshUpdate = contract("opportunity_consensus_update_sample.json");
 
 const isDesktop = () => test.info().project.name === "Desktop";
 
@@ -39,6 +41,9 @@ async function routeBase(page: Page, role: "normal" | "superuser" | "superadmin"
       best_return_strategy: null, best_return_target_month: null,
     } }));
   await page.route("**/api/auth/status", (route) => route.fulfill({ json: { role } }));
+  // LIVE-T3（#398）分析師資料區塊的狀態（更新流程另有專門的測試）。
+  await page.route("**/api/opportunity/consensus/status", (route) =>
+    route.fulfill({ json: refreshStatus }));
 }
 
 /** 首次搜尋回 AAA（三個家族各一列）並把 EEE 留在 `remaining`；續跑回 EEE 的抓鏈失敗。 */
@@ -161,7 +166,7 @@ test("個股詳細資料（#399）：入選與資料不足的列都能打開，�
   await routeBase(page, "superuser");
   await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
   const asked: string[] = [];
-  await page.route("**/api/opportunity/consensus/*", (route) => {
+  await page.route("**/api/opportunity/consensus-detail/*", (route) => {
     const symbol = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop()!);
     asked.push(symbol);
     return route.fulfill({ json: { ...detail, symbol, item: { ...detail.item, symbol } } });
@@ -244,5 +249,78 @@ test("Normal：導覽沒有機會搜尋入口；直接打網址導回首頁、�
   await expect(nav.getByRole("link", { name: "劇本庫" })).toBeVisible();
   await expect(nav.getByRole("link", { name: /機會/ })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "機會搜尋" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "更新分析師資料" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /重試/ })).toHaveCount(0);
   expect(hit).toBe(0);
+});
+
+// ---------- LIVE-T3（#398）：更新分析師資料與重試 ----------
+
+test("SU：更新分析師資料依 remaining 自動續跑到完；冷卻中的重試停用、時間到按下真的重試", async ({ page }) => {
+  // GGG 在樣本裡 12:53:20 失敗、13:08:20 才能重試。
+  await page.clock.install({ time: new Date("2026-09-28T13:00:00Z") });
+  await routeBase(page, "superuser");
+  let consensusLoads = 0;
+  await page.route("**/api/opportunity/consensus", (route) => {
+    consensusLoads += 1;
+    return route.fulfill({ json: consensus });
+  });
+  const bodies: unknown[] = [];
+  await page.route("**/api/opportunity/consensus/update", (route) => {
+    bodies.push(route.request().postDataJSON());
+    const n = bodies.length;
+    return route.fulfill({ json: n === 1
+      ? refreshUpdate
+      : { ...refreshUpdate, remaining: [],
+          progress: { ...refreshUpdate.progress, done: 56, failed: 1, pending: 0 } } });
+  });
+
+  await page.goto("/#/opportunity");
+  const panel = page.getByRole("region", { name: "分析師資料" });
+  await expect(panel.getByText("今日 已完成 24／57 檔、失敗 1 檔")).toBeVisible();
+  await expect(panel.getByText("資料日 2026-09-28")).toBeVisible();
+  await noHorizontalScroll(page);
+
+  await panel.getByRole("button", { name: "更新分析師資料" }).click();
+  await expect(panel.getByText("更新完成：已完成 56／57 檔、失敗 1 檔")).toBeVisible();
+  expect(bodies).toEqual([{}, {}]);
+  await expect.poll(() => consensusLoads).toBe(2);   // 完成後重讀共識清單
+
+  const ggg = panel.getByRole("listitem", { name: "GGG" });
+  const retry = ggg.getByRole("button", { name: "重試 GGG" });
+  await expect(retry).toBeDisabled();
+  await expect(ggg).toContainText("上次失敗，冷卻中，還要約 8 分 20 秒才能重試");
+  await noHorizontalScroll(page);
+
+  await page.clock.fastForward("08:21");
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  await expect.poll(() => bodies).toEqual([{}, {}, { symbols: ["GGG"] }]);
+});
+
+test("SU：每日上限時更新停下並說明原因；後端拒絕重試時在那一檔下照實顯示", async ({ page }) => {
+  await routeBase(page, "superadmin");
+  await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
+  const ready = { ...refreshStatus, symbols: refreshStatus.symbols.map((s: any) =>
+    s.symbol === "GGG" ? { ...s, state: "retry_ready", next_retry_at: null,
+                            retryable_now: true } : s) };
+  await page.route("**/api/opportunity/consensus/status", (route) =>
+    route.fulfill({ json: ready }));
+  const message = "今日分析師資料的上游呼叫已達每日上限，下一個交易日自動恢復";
+  await page.route("**/api/opportunity/consensus/update", (route) => {
+    const body = route.request().postDataJSON();
+    return body.symbols
+      ? route.fulfill({ status: 429, json: { detail: { stage: "consensus_daily_cap", message } } })
+      : route.fulfill({ json: { ...refreshUpdate, stopped_reason: "daily_cap", message } });
+  });
+
+  await page.goto("/#/opportunity");
+  const panel = page.getByRole("region", { name: "分析師資料" });
+  await panel.getByRole("button", { name: "更新分析師資料" }).click();
+  await expect(panel.getByRole("alert")).toContainText(`已停止（已完成 24／57 檔、失敗 1 檔）：${message}`);
+
+  const ggg = panel.getByRole("listitem", { name: "GGG" });
+  await ggg.getByRole("button", { name: "重試 GGG" }).click();
+  await expect(ggg.getByRole("alert")).toContainText(message);
+  await noHorizontalScroll(page);
 });

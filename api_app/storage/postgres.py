@@ -539,6 +539,18 @@ CREATE TABLE IF NOT EXISTS identity_tombstones (
     reason       TEXT NOT NULL,
     deleted_at   TEXT NOT NULL
 );
+-- LIVE-T3（#398）：分析師資料更新的重試狀態（只新增欄位；舊列＝第 1 次、
+-- 沒有冷卻、不知道最後成功時間）。
+ALTER TABLE consensus_refresh_state ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE consensus_refresh_state ADD COLUMN IF NOT EXISTS next_retry_at TEXT;
+ALTER TABLE consensus_refresh_state ADD COLUMN IF NOT EXISTS last_success_at TEXT;
+-- 「處理中」標記：同一 symbol 同一時間只有一次上游呼叫；`expires_at`（epoch
+-- 秒）逾時後別人可以重新取得，函式中途被砍也不會永久卡住。全站共用、不含 owner。
+CREATE TABLE IF NOT EXISTS consensus_refresh_leases (
+    symbol       TEXT PRIMARY KEY,
+    holder       TEXT NOT NULL,
+    expires_at   DOUBLE PRECISION NOT NULL
+);
 """
 
 # IRI-06：所有「一次鎖多張 owner 相關表」的操作（Beta Reset、absorb）共用
@@ -1238,24 +1250,65 @@ class PostgresStorage:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO consensus_refresh_state "
-                "(symbol, source, attempted_day, attempted_at, error) "
-                "VALUES (%s, %s, %s, %s, %s) "
+                "(symbol, source, attempted_day, attempted_at, error, attempts, "
+                "next_retry_at, last_success_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (symbol) DO UPDATE "
                 "SET source = EXCLUDED.source, "
                 "attempted_day = EXCLUDED.attempted_day, "
-                "attempted_at = EXCLUDED.attempted_at, error = EXCLUDED.error",
+                "attempted_at = EXCLUDED.attempted_at, error = EXCLUDED.error, "
+                "attempts = EXCLUDED.attempts, "
+                "next_retry_at = EXCLUDED.next_retry_at, "
+                "last_success_at = EXCLUDED.last_success_at",
                 (state.symbol, state.source, state.attempted_day,
-                 state.attempted_at, state.error))
+                 state.attempted_at, state.error, state.attempts,
+                 state.next_retry_at, state.last_success_at))
+
+    _REFRESH_STATE_COLUMNS = ("symbol, source, attempted_day, attempted_at, error, "
+                              "attempts, next_retry_at, last_success_at")
+
+    @staticmethod
+    def _refresh_state(r) -> ConsensusRefreshState:
+        return ConsensusRefreshState(symbol=r[0], source=r[1], attempted_day=r[2],
+                                     attempted_at=r[3], error=r[4], attempts=r[5],
+                                     next_retry_at=r[6], last_success_at=r[7])
 
     def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT symbol, source, attempted_day, attempted_at, error "
+                f"SELECT {self._REFRESH_STATE_COLUMNS} "
                 "FROM consensus_refresh_state").fetchall()
-        return {r[0]: ConsensusRefreshState(symbol=r[0], source=r[1],
-                                            attempted_day=r[2], attempted_at=r[3],
-                                            error=r[4])
-                for r in rows}
+        return {r[0]: self._refresh_state(r) for r in rows}
+
+    def get_consensus_refresh_state(self, symbol: str) -> ConsensusRefreshState | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._REFRESH_STATE_COLUMNS} "
+                "FROM consensus_refresh_state WHERE symbol = %s", (symbol,)).fetchone()
+        return self._refresh_state(row) if row else None
+
+    def acquire_consensus_refresh_lease(self, symbol: str, holder: str, *,
+                                        now: float, ttl_seconds: float) -> bool:
+        # 單一敘述＝原子：不存在就插入；存在時只有逾時的標記會被覆寫。
+        with self._connect() as conn:
+            row = conn.execute(
+                "INSERT INTO consensus_refresh_leases (symbol, holder, expires_at) "
+                "VALUES (%s, %s, %s) ON CONFLICT (symbol) DO UPDATE "
+                "SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at "
+                "WHERE consensus_refresh_leases.expires_at <= %s RETURNING symbol",
+                (symbol, holder, now + ttl_seconds, now)).fetchone()
+        return row is not None
+
+    def release_consensus_refresh_lease(self, symbol: str, holder: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM consensus_refresh_leases "
+                         "WHERE symbol = %s AND holder = %s", (symbol, holder))
+
+    def consensus_refresh_leases(self, *, now: float) -> dict[str, float]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT symbol, expires_at FROM consensus_refresh_leases "
+                                "WHERE expires_at > %s", (now,)).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def opportunity_custom_symbols(self) -> list[str]:
         with self._connect() as conn:
@@ -1472,7 +1525,8 @@ class PostgresStorage:
         "feedback", "iv_observations", "iv_backfill_runs", "contract_iv_history",
         "rate_cache", "dividend_cache", "treasury_year_cache", "chain_backoff",
         "main_account", "owner_merge_archive", "identity_tombstones",
-        "consensus_snapshots", "consensus_refresh_state", "consensus_details")
+        "consensus_snapshots", "consensus_refresh_state",
+        "consensus_refresh_leases", "consensus_details")
 
     def table_row_counts(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -1523,7 +1577,8 @@ class PostgresStorage:
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
         `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
-        `consensus_snapshots`／`consensus_refresh_state`／`consensus_details`
+        `consensus_snapshots`／`consensus_refresh_state`／
+        `consensus_refresh_leases`／`consensus_details`
         ——這些表結構上就沒有 `owner_id` 欄位，本方法從不觸碰它們。
 
         刪除 `browser_identities`／`owners` 的理由（PB-04 §7
@@ -1917,6 +1972,15 @@ class PostgresStorage:
                         "AND key = %s AND window_seconds = %s AND window_start = %s",
                         (b.scope, b.key, b.window_seconds, b.window_start))
         return None
+
+    def rate_limit_count(self, bucket: RateLimitBucket) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT count FROM rate_limits WHERE scope = %s AND key = %s AND "
+                "window_seconds = %s AND window_start = %s",
+                (bucket.scope, bucket.key, bucket.window_seconds,
+                 bucket.window_start)).fetchone()
+        return row[0] if row else 0
 
     def purge_rate_limits(self, *, before_epoch: int) -> int:
         with self._connect() as conn:

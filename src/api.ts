@@ -552,13 +552,19 @@ export function resolveCandidate(
  * 沒有對應的倒數時間點可揭露）。
  * `"usage_limited"`（SECURITY-FIX-02）：這個瀏覽器／網路來源短時間內
  * 查詢次數超過上限（per-owner quota／source burst），稍後自然恢復。
+ *
+ * LIVE-T3（#398）「更新分析師資料」的重試：`"consensus_daily_cap"`＝今日
+ * 分析師資料的上游呼叫已達每日上限；`"consensus_not_retryable"`＝這一檔
+ * 現在不能重試（今天已成功、冷卻中、重試用完或別人正在處理）。
  */
 export type FailureStage =
   | "fetch" | "analyze" | "params" | "archived" | "rate_limited"
-  | "vendor_budget_exhausted" | "usage_limited" | null;
+  | "vendor_budget_exhausted" | "usage_limited"
+  | "consensus_daily_cap" | "consensus_not_retryable" | null;
 
 const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited",
-                "vendor_budget_exhausted", "usage_limited"] as const;
+                "vendor_budget_exhausted", "usage_limited",
+                "consensus_daily_cap", "consensus_not_retryable"] as const;
 
 /**
  * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的
@@ -1332,6 +1338,95 @@ export function getOpportunityConsensus(
   return request<OpportunityConsensusResponse>("/api/opportunity/consensus", { signal });
 }
 
+/** LIVE-T3（#398）：一檔分析師資料的更新狀態。`state`：`pending` 今天還沒
+ *  試過、`done` 今天已成功（同一交易日不再抓）、`cooling` 失敗冷卻中、
+ *  `retry_ready` 失敗但冷卻已過、`exhausted` 今天重試用完（下一個交易日）、
+ *  `in_progress` 別人正在抓。時間都是 ISO UTC。 */
+export type ConsensusRefreshState =
+  | "pending" | "done" | "cooling" | "retry_ready" | "exhausted" | "in_progress";
+
+export interface ConsensusRefreshSymbol {
+  symbol: string;
+  state: ConsensusRefreshState;
+  last_success_at: string | null;
+  last_attempt_at: string | null;
+  error: string | null;
+  retries_today: number;
+  /** 冷卻中＝最早可重試時間；用完＝下一個美東日零時；其餘 `null`。 */
+  next_retry_at: string | null;
+  retryable_now: boolean;
+  /** 這檔最新一份成功資料的日期。 */
+  as_of: string | null;
+}
+
+export interface ConsensusRefreshProgress {
+  total: number;
+  done: number;
+  failed: number;
+  pending: number;
+  in_progress: number;
+}
+
+export interface ConsensusRefreshPolicy {
+  max_retries: number;
+  retry_cooldown_seconds: number;
+  rate_limit_cooldown_seconds: number;
+  daily_upstream_cap: number;
+  lease_seconds: number;
+  call_spacing_seconds: number;
+  batch_size: number;
+}
+
+/** `GET /api/opportunity/consensus/status`（只限 SU／SA）。形狀以
+ *  `contracts/opportunity_consensus_status_sample.json` 為準。 */
+export interface ConsensusRefreshStatusResponse {
+  source: { configured: boolean; name: string | null; is_fixture: boolean };
+  today: string;
+  now: string;
+  policy: ConsensusRefreshPolicy;
+  daily_cap: number;
+  upstream_calls_today: number;
+  data_as_of: string | null;
+  progress: ConsensusRefreshProgress;
+  symbols: ConsensusRefreshSymbol[];
+}
+
+/** `POST /api/opportunity/consensus/update`。形狀以
+ *  `contracts/opportunity_consensus_update_sample.json` 為準。`remaining`
+ *  非空就再呼叫一次（不帶 `symbols`）；`stopped_reason: "daily_cap"` 時
+ *  停下並顯示 `message`。 */
+export interface ConsensusUpdateResponse {
+  source: string;
+  as_of: string;
+  processed: number;
+  processed_symbols: string[];
+  succeeded: number;
+  failed: number;
+  already_attempted_today: number;
+  remaining: string[];
+  skipped: { symbol: string; state: ConsensusRefreshState;
+             next_retry_at: string | null; message: string }[];
+  stopped_reason: "daily_cap" | null;
+  message: string | null;
+  upstream_calls_today: number;
+  daily_cap: number;
+  progress: ConsensusRefreshProgress;
+}
+
+export function getConsensusRefreshStatus(
+  signal?: AbortSignal,
+): Promise<ConsensusRefreshStatusResponse> {
+  return request<ConsensusRefreshStatusResponse>("/api/opportunity/consensus/status",
+                                                 { signal });
+}
+
+/** 省略 `symbols`＝更新整個母體的下一批；給了＝只重試這幾檔（不能重試時
+ *  丟 `ApiError`，stage 為 `consensus_not_retryable`／`consensus_daily_cap`）。 */
+export function updateConsensus(symbols?: string[]): Promise<ConsensusUpdateResponse> {
+  return request<ConsensusUpdateResponse>("/api/opportunity/consensus/update",
+                                          POST_JSON(symbols ? { symbols } : {}));
+}
+
 /** LIVE-T2（#399）：有效集合的一筆——原始目標價與以資料日為基準的分割
  *  換算值（`adjusted_price` 才是進平均／標準差的值）。 */
 export interface ConsensusEffectiveTarget {
@@ -1356,7 +1451,7 @@ export interface ConsensusSeriesPoint {
   reason: string | null;
 }
 
-/** LIVE-T2（#399）：`GET /api/opportunity/consensus/{symbol}`（只限 SU／SA，
+/** LIVE-T2（#399）：`GET /api/opportunity/consensus-detail/{symbol}`（只限 SU／SA，
  *  只讀快取）。形狀以 `contracts/opportunity_detail_sample.json` 為準。
  *  `item` 與共識清單的項目同一份；`detail_available` 為假時明細（`effective`／
  *  `series`）尚未就緒、兩者為空。來源未設定時 `item` 為 null、帶 `message`。 */
@@ -1378,7 +1473,7 @@ export function getOpportunityConsensusDetail(
   signal?: AbortSignal,
 ): Promise<OpportunityConsensusDetail> {
   return request<OpportunityConsensusDetail>(
-    `/api/opportunity/consensus/${encodeURIComponent(symbol)}`, { signal });
+    `/api/opportunity/consensus-detail/${encodeURIComponent(symbol)}`, { signal });
 }
 
 /** OS-04（#393）：`POST /api/opportunity/search` 的請求（每個欄位都可省略：

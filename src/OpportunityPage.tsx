@@ -26,8 +26,12 @@
  *   的 Max Loss 也是這樣 ÷100 顯示），存成劇本後詳細頁與這一列是同一個數字。
  *   排序仍用後端的每口原值（÷100 是單調的，順序不變）。
  * - 文案只說「目標價情境報酬」，並固定一句它不是期望值或勝率。
+ * - 來源已設定時，頁首下方是「分析師資料」區塊（`AnalystUpdatePanel`，
+ *   LIVE-T3／#398）：更新／重試結束後重讀共識清單。
  */
 import { useEffect, useRef, useState } from "react";
+
+import AnalystUpdatePanel from "./AnalystUpdatePanel";
 
 import {
   formatLegs,
@@ -147,6 +151,8 @@ export default function OpportunityPage({
   }, [role, allowed]);
 
   const [consensus, setConsensus] = useState<Load>({ state: "loading" });
+  // 「更新分析師資料」／重試結束後加一，重讀共識清單（LIVE-T3／#398）。
+  const [consensusVersion, setConsensusVersion] = useState(0);
   useEffect(() => {
     if (!allowed) return;
     const controller = new AbortController();
@@ -158,7 +164,7 @@ export default function OpportunityPage({
         }
       });
     return () => controller.abort();
-  }, [allowed]);
+  }, [allowed, consensusVersion]);
 
   const [search, setSearch] = useState<SearchState>(EMPTY_SEARCH);
   const [started, setStarted] = useState(false);
@@ -298,6 +304,10 @@ export default function OpportunityPage({
             要有提供個別分析師目標價的資料來源，才能算出共識並搜尋選擇權。設定好之前這裡不會有任何清單或搜尋結果。
           </p>
         </section>
+      )}
+
+      {data && data.source.configured && (
+        <AnalystUpdatePanel onUpdated={() => setConsensusVersion((v) => v + 1)} />
       )}
 
       {data && data.source.configured && (

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from datetime import datetime
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -27,20 +26,6 @@ from option_chaser.consensus import ConsensusRules
 from option_chaser.data.yahoo_analyst import FIRM_ALIASES
 
 DEFAULT = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "AVGO", "JPM", "BABA", "TSM", "WDFC"]
-
-
-class Paced:
-    """每次抓取前間隔 1.5 秒，避免造成負擔。"""
-
-    def __init__(self, inner):
-        self.inner, self.name, self.is_fixture = inner, inner.name, inner.is_fixture
-        self.first = True
-
-    def fetch(self, symbol, today):
-        if not self.first:
-            time.sleep(1.5)
-        self.first = False
-        return self.inner.fetch(symbol, today)
 
 
 def _storage():
@@ -60,9 +45,10 @@ def main(symbols: list[str]) -> int:
     today = datetime.now(ZoneInfo("America/New_York")).date()
     storage, where = _storage()
     rules = ConsensusRules(aliases=FIRM_ALIASES)
-    source = Paced(YahooAnalystSource())
-    stats = consensus_cache.refresh_symbols(storage, source, symbols, today,
-                                            budget_exhausted=lambda: False, rules=rules)
+    source = YahooAnalystSource()
+    stats = consensus_cache.refresh_symbols(
+        storage, source, symbols, today, budget_exhausted=lambda: False, rules=rules,
+        policy=consensus_cache.RefreshPolicy(call_spacing_seconds=1.5))
     print(f"# LIVE-T2 實測 {tw} (台灣)，美東日期 {today}，storage={where}")
     print(f"更新：成功 {stats['succeeded']}、失敗 {stats['failed']}、"
           f"今天已更新過 {stats['already_attempted_today']}")

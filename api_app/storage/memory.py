@@ -65,6 +65,8 @@ class MemoryStorage:
         # OS-03（#392）：分析師共識快取——鍵 (symbol, as_of)／symbol。
         self._consensus_snapshots: dict[tuple[str, str], ConsensusSnapshotRecord] = {}
         self._consensus_refresh_state: dict[str, ConsensusRefreshState] = {}
+        # LIVE-T3（#398）：處理中標記 symbol → (holder, expires_at epoch)。
+        self._consensus_refresh_leases: dict[str, tuple[str, float]] = {}
         self._consensus_details: dict[str, ConsensusDetailRecord] = {}   # LIVE-T2／#399
         self._treasury_year_cache: dict[int, TreasuryYearCacheEntry] = {}
         self._chain_backoff: dict[str, ChainBackoffEntry] = {}
@@ -363,6 +365,28 @@ class MemoryStorage:
 
     def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
         return dict(self._consensus_refresh_state)
+
+    def get_consensus_refresh_state(self, symbol: str) -> ConsensusRefreshState | None:
+        return self._consensus_refresh_state.get(symbol)
+
+    def acquire_consensus_refresh_lease(self, symbol: str, holder: str, *,
+                                        now: float, ttl_seconds: float) -> bool:
+        with self._claim_lock:
+            current = self._consensus_refresh_leases.get(symbol)
+            if current is not None and current[1] > now:
+                return False
+            self._consensus_refresh_leases[symbol] = (holder, now + ttl_seconds)
+            return True
+
+    def release_consensus_refresh_lease(self, symbol: str, holder: str) -> None:
+        with self._claim_lock:
+            current = self._consensus_refresh_leases.get(symbol)
+            if current is not None and current[0] == holder:
+                del self._consensus_refresh_leases[symbol]
+
+    def consensus_refresh_leases(self, *, now: float) -> dict[str, float]:
+        return {symbol: expires for symbol, (_holder, expires)
+                in self._consensus_refresh_leases.items() if expires > now}
 
     def opportunity_custom_symbols(self) -> list[str]:
         privileged = ("superuser", "superadmin")
@@ -974,6 +998,10 @@ class MemoryStorage:
             for slot in slots:
                 self._rate_limits[slot] = self._rate_limits.get(slot, 0) + 1
         return None
+
+    def rate_limit_count(self, bucket: RateLimitBucket) -> int:
+        return self._rate_limits.get((bucket.scope, bucket.key,
+                                      bucket.window_seconds, bucket.window_start), 0)
 
     def purge_rate_limits(self, *, before_epoch: int) -> int:
         with self._claim_lock:

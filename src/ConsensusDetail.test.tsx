@@ -50,7 +50,7 @@ describe("ConsensusDetail：開啟與讀取", () => {
     const { user, button } = await open();
     await screen.findByText("Bernstein");
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(String(spy.mock.calls[0][0])).toBe("/api/opportunity/consensus/NVDA");
+    expect(String(spy.mock.calls[0][0])).toBe("/api/opportunity/consensus-detail/NVDA");
     await user.click(button);
     expect(screen.queryByRole("region", { name: "NVDA 共識明細" })).not.toBeInTheDocument();
     await user.click(button);

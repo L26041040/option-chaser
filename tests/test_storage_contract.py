@@ -93,7 +93,8 @@ def storage(request):
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
                      "role_sessions, rate_limits, feedback, identity_tombstones, "
-                     "consensus_snapshots, consensus_refresh_state, consensus_details "
+                     "consensus_snapshots, consensus_refresh_state, consensus_refresh_leases, "
+                     "consensus_details "
                      "RESTART IDENTITY")
     yield st
 
@@ -643,6 +644,68 @@ def test_consensus_detail_keeps_only_the_latest_row_per_symbol(storage):
     storage.save_consensus_detail(_detail_record("BBB"))
     assert storage.get_consensus_detail("AAA") == later
     assert storage.get_consensus_detail("BBB").symbol == "BBB"
+# ---------- 分析師資料更新：重試狀態、處理中標記、每日上游上限（LIVE-T3／#398） ----------
+
+
+def test_consensus_refresh_state_new_fields_default_for_old_rows(storage):
+    """舊列（#392 寫的）沒有新欄位：讀回來 attempts=1、其餘 None。"""
+    old = ConsensusRefreshState(symbol="AAA", source="fixture",
+                                attempted_day="2026-09-28",
+                                attempted_at="2026-09-28T10:00:00+00:00")
+    storage.save_consensus_refresh_state(old)
+    got = storage.get_consensus_refresh_state("AAA")
+    assert got == old
+    assert (got.attempts, got.next_retry_at, got.last_success_at) == (1, None, None)
+
+
+def test_consensus_refresh_state_roundtrips_retry_fields(storage):
+    st = ConsensusRefreshState(symbol="AAA", source="yahoo-udh",
+                               attempted_day="2026-09-28",
+                               attempted_at="2026-09-28T10:00:00+00:00",
+                               error="Yahoo 限流（分析師資料 429）", attempts=3,
+                               next_retry_at="2026-09-28T10:30:00+00:00",
+                               last_success_at="2026-09-25T10:00:00+00:00")
+    storage.save_consensus_refresh_state(st)
+    assert storage.get_consensus_refresh_state("AAA") == st
+    assert storage.consensus_refresh_states() == {"AAA": st}
+    assert storage.get_consensus_refresh_state("ZZZ") is None
+
+
+def test_consensus_refresh_lease_is_exclusive_until_it_expires(storage):
+    assert storage.acquire_consensus_refresh_lease("AAA", "h1", now=1000.0,
+                                                   ttl_seconds=120) is True
+    # 別人在逾時前拿不到；同一檔以外的 symbol 不受影響。
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1100.0,
+                                                   ttl_seconds=120) is False
+    assert storage.acquire_consensus_refresh_lease("BBB", "h2", now=1100.0,
+                                                   ttl_seconds=120) is True
+    assert storage.consensus_refresh_leases(now=1100.0) == {"AAA": 1120.0,
+                                                            "BBB": 1220.0}
+    # 逾時（函式中斷、沒釋放）後可以重新取得。
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1120.0,
+                                                   ttl_seconds=120) is True
+    assert storage.consensus_refresh_leases(now=1120.0)["AAA"] == 1240.0
+
+
+def test_consensus_refresh_lease_release_only_by_its_holder(storage):
+    storage.acquire_consensus_refresh_lease("AAA", "h1", now=1000.0, ttl_seconds=120)
+    storage.release_consensus_refresh_lease("AAA", "someone-else")
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1001.0,
+                                                   ttl_seconds=120) is False
+    storage.release_consensus_refresh_lease("AAA", "h1")
+    assert storage.consensus_refresh_leases(now=1001.0) == {}
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1001.0,
+                                                   ttl_seconds=120) is True
+
+
+def test_rate_limit_count_reads_the_bucket_without_consuming(storage):
+    bucket = RateLimitBucket("consensus_upstream", "yahoo-udh", 86400, 1_790_000_000, 2)
+    assert storage.rate_limit_count(bucket) == 0
+    assert storage.rate_limit_consume([bucket]) is None
+    assert storage.rate_limit_count(bucket) == 1
+    assert storage.rate_limit_consume([bucket]) is None
+    assert storage.rate_limit_consume([bucket]) == 0          # 已達上限：不扣
+    assert storage.rate_limit_count(bucket) == 2
 
 
 def _owner_with_role(storage, owner_id, *, owner_role="normal", device_role=None):

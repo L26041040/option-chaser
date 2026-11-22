@@ -187,7 +187,8 @@ def test_refresh_capable_routes_are_still_exactly_the_existing_two():
     # 唯一的例外是 OS-03／#392 的 `/api/cron/consensus-refresh`：只接受
     # CRON_SECRET、只更新全站共識快取、不刷新任何劇本，不是使用者可觸發
     # 的刷新入口。只排除這一條——之後任何新的 refresh 路由（含別的 cron）
-    # 都要在這裡被看見。
+    # 都要在這裡被看見。LIVE-T3（#398）的 `POST /api/opportunity/consensus/update`
+    # 同理：只更新全站共識快取（SU／SA，受重試／每日上限約束），不刷新劇本。
     c = _client()
     refresh_routes = sorted(
         (route.path, tuple(sorted(route.methods)))

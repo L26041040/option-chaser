@@ -14,10 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import consensusSample from "../contracts/opportunity_consensus_sample.json";
 import detailSample from "../contracts/opportunity_detail_sample.json";
+import statusSample from "../contracts/opportunity_consensus_status_sample.json";
 import searchSample from "../contracts/opportunity_search_sample.json";
 import OpportunityPage from "./OpportunityPage";
 import {
   ApiError,
+  type ConsensusRefreshStatusResponse,
   type OpportunityConsensusResponse,
   type OpportunitySearchResponse,
 } from "./api";
@@ -25,6 +27,7 @@ import type { Role } from "./superuser";
 
 const CONSENSUS = consensusSample as unknown as OpportunityConsensusResponse;
 const SEARCH = searchSample as unknown as OpportunitySearchResponse;
+const STATUS = statusSample as unknown as ConsensusRefreshStatusResponse;
 
 const NOT_CONFIGURED: OpportunityConsensusResponse = {
   ...CONSENSUS,
@@ -52,11 +55,13 @@ function mockApi({
   const spy = vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.startsWith("/api/auth/status")) return res(200, { role });
-    if (u.startsWith("/api/opportunity/consensus/")) {
+    if (u.startsWith("/api/opportunity/consensus-detail/")) {
       const symbol = decodeURIComponent(u.split("/").pop() ?? "");
       return res(200, { ...detailSample, symbol,
                         item: { ...detailSample.item, symbol } });
     }
+    // LIVE-T3（#398）的分析師資料區塊：本檔不測它（見 AnalystUpdatePanel.test.tsx）。
+    if (u.startsWith("/api/opportunity/consensus/status")) return res(200, STATUS);
     if (u.startsWith("/api/opportunity/consensus")) {
       const r = await consensus;
       return res(r.status, r.body);
@@ -202,12 +207,12 @@ describe("OpportunityPage：個股詳細資料（LIVE-T2／#399）", () => {
       expect(within(region).getByRole("button", { name: `${symbol} 詳細資料` }))
         .toBeInTheDocument();
     }
-    expect(callsTo(spy, "/api/opportunity/consensus/")).toHaveLength(0);
+    expect(callsTo(spy, "/api/opportunity/consensus-detail/")).toHaveLength(0);
     await user.click(within(thin).getByRole("button", { name: "DDD 詳細資料" }));
     const panel = await within(thin).findByRole("region", { name: "DDD 共識明細" });
     expect(await within(panel).findByRole("list", { name: "每月分歧度" })).toBeInTheDocument();
-    expect(callsTo(spy, "/api/opportunity/consensus/").map(([u]) => String(u)))
-      .toEqual(["/api/opportunity/consensus/DDD"]);
+    expect(callsTo(spy, "/api/opportunity/consensus-detail/").map(([u]) => String(u)))
+      .toEqual(["/api/opportunity/consensus-detail/DDD"]);
   });
 });
 

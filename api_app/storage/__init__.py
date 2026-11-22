@@ -313,12 +313,22 @@ class ConsensusRefreshState:
 
     `attempted_day` 是「同一交易日最多抓一次上游」的依據，也是每日 cron
     的進度游標（最久沒嘗試的先跑，跑不完的下次接續）。`error` 非 `None`
-    代表那次失敗——上一份成功的 Snapshot 原樣保留。"""
+    代表那次失敗——上一份成功的 Snapshot 原樣保留。
+
+    LIVE-T3（#398）新增三欄（只新增；舊列讀回預設值）：
+    - `attempts`：`attempted_day` 這一天已經打了幾次上游（含成功那次）——
+      失敗的重試上限依它判斷，換日歸零重算。
+    - `next_retry_at`：失敗後最早可以再試的時間（ISO UTC；冷卻、429
+      `Retry-After`、重試用完時＝下一個美東日零時）。成功時為 `None`。
+    - `last_success_at`：最後一次成功的時間（ISO UTC），失敗時沿用。"""
     symbol: str
     source: str
     attempted_day: str       # YYYY-MM-DD（美東）
     attempted_at: str        # ISO UTC
     error: str | None = None
+    attempts: int = 1
+    next_retry_at: str | None = None
+    last_success_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1006,6 +1016,23 @@ class Storage(Protocol):
     def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
         """全部 symbol 的最後一次嘗試狀態（數量 ≈ 母體大小，數百筆以內）。"""
 
+    def get_consensus_refresh_state(self, symbol: str) -> ConsensusRefreshState | None:
+        """單一 symbol 的嘗試狀態；從沒嘗試過回 `None`。取得處理中標記後
+        重新讀它，才知道別人是不是剛剛已經抓完（LIVE-T3／#398）。"""
+
+    def acquire_consensus_refresh_lease(self, symbol: str, holder: str, *,
+                                        now: float, ttl_seconds: float) -> bool:
+        """「處理中」標記（LIVE-T3／#398）：同一個 symbol 同一時間只能有一次
+        上游呼叫。沒有標記、或既有標記已逾時（`expires_at <= now`，函式中斷
+        沒釋放）時原子地取得並回 `True`（到期時間 `now + ttl_seconds`，
+        epoch 秒）；別人的標記還沒逾時回 `False`。"""
+
+    def release_consensus_refresh_lease(self, symbol: str, holder: str) -> None:
+        """只釋放 `holder` 自己的標記；已被別人（逾時後）取得的不動。"""
+
+    def consensus_refresh_leases(self, *, now: float) -> dict[str, float]:
+        """還沒逾時的處理中標記：symbol → 到期時間（epoch 秒）。"""
+
     def opportunity_custom_symbols(self) -> list[str]:
         """**目前權限為 SU／SA** 的 owner 的 `opportunity_search.custom_symbols`
         聯集（排序、去重）——每日共識更新的母體之一。「目前權限」＝owner
@@ -1357,7 +1384,7 @@ class Storage(Protocol):
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
         `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
         `consensus_snapshots`／`consensus_refresh_state`／
-        `consensus_details`
+        `consensus_refresh_leases`／`consensus_details`
         ——這些表結構上沒有 `owner_id` 欄位。
 
         **單一交易內完成**（postgres 無 FK cascade，全部手動
@@ -1543,6 +1570,11 @@ class Storage(Protocol):
         並發下是精確的，不是軟性上限：多個 serverless instance 同時扣
         同一格時，後到的會等先到的交易結束再讀到新的計數（Postgres 用
         列鎖、依主鍵順序上鎖避免死結；記憶體後端用 lock）。"""
+
+    def rate_limit_count(self, bucket: RateLimitBucket) -> int:
+        """這個計數格目前的次數（不扣、不建立；沒有這一列＝0）。LIVE-T3
+        （#398）的每日上游呼叫上限沿用 `rate_limit_consume()` 這套計數，
+        狀態 API 用本方法讀今天已用了幾次。"""
 
     def purge_rate_limits(self, *, before_epoch: int) -> int:
         """刪掉視窗在 `before_epoch` 之前就已經結束的計數列，回傳刪了
