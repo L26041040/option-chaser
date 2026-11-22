@@ -190,7 +190,7 @@ def parse_quote_summary(body: str) -> QuoteSummary:
     except (ValueError, AttributeError) as e:
         raise YahooError("回應格式無法解析（不是預期的 JSON）") from e
     if not result or not isinstance(result[0], dict):
-        raise YahooError("Yahoo 沒有這個 symbol 的分析師資料")
+        raise YahooError(_NOT_FOUND_ANALYST)
     entry = result[0]
     history = (entry.get("upgradeDowngradeHistory") or {}).get("history")
     if not isinstance(history, list):
@@ -302,12 +302,16 @@ def _close_on_or_before(weekly_closes, day: date) -> Decimal | None:
     return best[1]
 
 
-def _raise_for_status(resp: HttpResponse, what: str) -> None:
+_NOT_FOUND_ANALYST = "Yahoo 沒有這個 symbol 的分析師資料"
+
+
+def _raise_for_status(resp: HttpResponse, what: str, *,
+                      not_found: str = _NOT_FOUND_ANALYST) -> None:
     if resp.status == 429:
         raise YahooError(f"Yahoo 限流（{what} 429）", retry_after=_retry_after(resp.headers),
                          rate_limited=True)
     if resp.status == 404:
-        raise YahooError("Yahoo 沒有這個 symbol 的分析師資料")
+        raise YahooError(not_found)
     if resp.status != 200:
         raise YahooError(f"{what}回應狀態碼 {resp.status}")
 
@@ -339,20 +343,24 @@ class YahooClient:
         self._crumb = crumb
         return crumb
 
-    def _summary(self, symbol: str) -> str:
+    def get_with_crumb(self, url: str, what: str, *,
+                       not_found: str = _NOT_FOUND_ANALYST) -> str:
+        """帶 crumb 的 GET；crumb 過期（401）時重取一次。非 200 一律收斂成
+        `YahooError`。選擇權鏈 adapter（`yahoo_options`）與本模組共用這一段。"""
+        sep = "&" if "?" in url else "?"
         for attempt in (0, 1):
             crumb = self._crumb or self._refresh_crumb()
-            resp = self._get(SUMMARY_URL.format(symbol=quote(symbol))
-                             + "&crumb=" + quote(crumb))
+            resp = self._get(url + sep + "crumb=" + quote(crumb))
             if resp.status == 401 and attempt == 0:
                 self._crumb = None             # crumb 過期：重取一次
                 continue
-            _raise_for_status(resp, "分析師資料")
+            _raise_for_status(resp, what, not_found=not_found)
             return resp.body
         raise YahooError("Yahoo crumb 重取後仍被拒絕（401）")
 
     def fetch(self, symbol: str) -> YahooSymbolData:
-        summary = parse_quote_summary(self._summary(symbol))
+        summary = parse_quote_summary(self.get_with_crumb(
+            SUMMARY_URL.format(symbol=quote(symbol)), "分析師資料"))
         chart = self._get(CHART_URL.format(symbol=quote(symbol)))
         _raise_for_status(chart, "股價／分割")
         splits, weekly = parse_chart(chart.body)

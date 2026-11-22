@@ -1144,7 +1144,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     # backoff 包裝無從套用也不需要套用。
     def _vendor_attempt(fn: FetchChain, source: str, *, meter: bool = True) -> FetchChain:
         """SECURITY-P1-VENDOR-ATTEMPT-001：**每一次真正要送出的上游請求**
-        的唯一關卡——自訂 provider、Cboe、yfinance 備援各自包一層，一次
+        的唯一關卡——自訂 provider、Cboe、Yahoo 直連、yfinance 備援各自包一層，一次
         logical 抓鏈裡的每個 attempt 都各自過一次：
 
         1. global vendor fuse（不分角色）；
@@ -1201,14 +1201,24 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         except _ATTEMPT_REFUSALS:
             raise
         except FetchError:
-            from option_chaser.data import yf
+            pass
+        # OPTION-CHASER-PRODUCTION-DELIVERY-001：Cboe 失敗（含被 Cloudflare
+        # 擋下）→ Yahoo 直連（stdlib，production 一定有）→ yfinance（選用）。
+        # 每一步都是各自一個 `_vendor_attempt()`；模組屬性延遲查找，測試
+        # monkeypatch `yahoo_options.fetch_chain` 才吃得到。
+        from option_chaser.data import yahoo_options, yf
 
+        try:
+            return _vendor_attempt(yahoo_options.fetch_chain, "yahoo")(symbol)
+        except _ATTEMPT_REFUSALS:
+            raise
+        except FetchError:
             # yfinance 是選用依賴，production 沒裝：沒裝就不會有任何
             # 上游請求，這個 attempt 整個跳過（不扣額度、不計 fetch），
-            # 直接讓 Cboe 的失敗往外走。
+            # 直接讓 Yahoo 的失敗往外走。
             if not yf.available():
                 raise
-            return _vendor_attempt(yf.fetch_chain, "yfinance")(symbol)
+        return _vendor_attempt(yf.fetch_chain, "yfinance")(symbol)
 
     _effective_fetch: FetchChain = (
         _default_fetch if fetch is service.fetch_chain
@@ -1842,7 +1852,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
         Market Data 選「自訂」且該 Provider 有 credential 時先走自訂；
         **失敗就退回預設來源**（`_effective_fetch`，即既有的 Cboe →
-        yfinance 降級鏈，SCALE-04／#255 起 Cboe 那一步多了
+        Yahoo 直連 → yfinance 降級鏈，SCALE-04／#255 起 Cboe 那一步多了
         provider-global backoff），而且把失敗如實記成一次驗證失敗——
         設定頁的三態
         因此會自己變成「驗證失敗」並說出原因，不需要另一套「上次
@@ -1854,8 +1864,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         自訂還是預設路徑，都得先經過這裡。SECURITY-P1-VENDOR-ATTEMPT-001：
         Global Vendor Fuse 與 abuse-control 額度不再只在這裡最上方檢查
         一次，而是在**每一個真正的上游 attempt** 前各檢查一次（自訂
-        provider、Cboe、yfinance 備援各自包一層 `_vendor_attempt()`）：
-        一次 logical 抓鏈最多會送出三個上游請求，每一個都算。Super User
+        provider、Cboe、Yahoo 直連、yfinance 備援各自包一層 `_vendor_attempt()`）：
+        一次 logical 抓鏈最多會送出四個上游請求，每一個都算。Super User
         使用產品本身（即使切了自訂 provider）同樣受 fuse 約束，不豁免
         （spec §8 v3）。
         """
@@ -2018,7 +2028,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             kind = "unavailable"
         return {"status": "ok", "engine_version": __version__,
                 "storage": kind, "path": request.url.path, "rate": rate,
-                "backend": _backend_identity()}
+                "backend": _backend_identity(),
+                "opportunity": _opportunity_identity()}
+
+    def _opportunity_identity() -> dict:
+        """OPTION-CHASER-PRODUCTION-DELIVERY-001：匿名探測就能確認部署的後端
+        有沒有接上分析師資料來源——只讀建構時注入的物件，不連外、不含秘密。"""
+        return {"analyst_source": analyst_source.name if analyst_source else None,
+                "configured": analyst_source is not None}
 
     def _backend_identity() -> dict:
         """OPTION-CHASER-CROSS-DEVICE-ACCOUNT-001：任何網址（正式網域、分支

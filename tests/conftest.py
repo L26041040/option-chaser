@@ -31,3 +31,22 @@ def _freeze_ny_today(monkeypatch):
     for module in list(sys.modules.values()):
         if getattr(module, "ny_today", None) is _ORIGINAL_NY_TODAY:
             monkeypatch.setattr(module, "ny_today", _frozen_ny_today)
+
+
+def _network_disabled(self, url: str):
+    raise OSError("network disabled in tests (tests/conftest.py)")
+
+
+@pytest.fixture(autouse=True)
+def _block_yahoo_network(monkeypatch):
+    """OPTION-CHASER-PRODUCTION-DELIVERY-001：預設抓鏈降級鏈多了 Yahoo 直連
+    （Cboe → Yahoo → yfinance）。許多既有測試只把 Cboe 換成失敗假體——沒有這層，
+    它們會讓 `yahoo_options.fetch_chain` 用真的 `UrllibTransport` 連外。
+
+    把共用的 `UrllibTransport.get` 換成丟 `OSError`：`YahooClient` 照既有規則
+    收斂成 `YahooError`（`FetchError`），降級鏈照常往下走，測試結果不取決於
+    這台機器能不能連到 Yahoo。要測 Yahoo 的測試一律注入自己的假 transport
+    （或直接 monkeypatch `yahoo_options.fetch_chain`）。"""
+    from option_chaser.data.yahoo_analyst import UrllibTransport
+
+    monkeypatch.setattr(UrllibTransport, "get", _network_disabled)

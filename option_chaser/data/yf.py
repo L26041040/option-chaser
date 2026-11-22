@@ -24,8 +24,11 @@ def _clean_count(value) -> int:
 
 
 def map_rows(
-    symbol: str, spot: float, fetched_at: str, rows: list[dict]
+    symbol: str, spot: float, fetched_at: str, rows: list[dict], *,
+    source: str = "yfinance",
 ) -> ChainSnapshot:
+    """yfinance 形狀的列 → `ChainSnapshot`。`source`：直連 Yahoo 的 adapter
+    （`yahoo_options`，同一個上游端點）共用這份對應，只換來源標示。"""
     contracts = tuple(
         OptionContract(
             contract_symbol=str(r["contractSymbol"]),
@@ -43,7 +46,7 @@ def map_rows(
     )
     return ChainSnapshot(
         schema_version=SCHEMA_VERSION, symbol=symbol, fetched_at=fetched_at,
-        spot=spot, source="yfinance", contracts=contracts,
+        spot=spot, source=source, contracts=contracts,
     )
 
 
