@@ -1,0 +1,915 @@
+{
+  "symbol": "NVDA",
+  "thresholds": {
+    "percentile_max": 20.0,
+    "dispersion_max": 10.0
+  },
+  "rules": {
+    "rules_version": "provisional-split-price",
+    "provisional": true,
+    "n_min": 5,
+    "validity_months": 12,
+    "freshness_days": 90,
+    "freshness_min_share": 0.5,
+    "h_min": 24,
+    "stdev_kind": "sample",
+    "lookback_points": 60,
+    "sampling": "month_end",
+    "target_month_rule": "fixed_12m"
+  },
+  "item": {
+    "symbol": "NVDA",
+    "status": "ok",
+    "as_of": "2026-11-21",
+    "n_analysts": 35,
+    "mean": 252.85714285714286,
+    "stdev": 71.83647396411268,
+    "dispersion": 0.28409904957558685,
+    "percentile": 0.9666666666666667,
+    "history_points": 60,
+    "coverage": "partial",
+    "freshness_share": 0.9142857142857143,
+    "high": 515.0,
+    "low": 174.0,
+    "median_published_on": "2026-11-13",
+    "reasons": [],
+    "gate": {
+      "first": false,
+      "second": false,
+      "selected": false,
+      "reasons": [
+        "percentile: 0.9666666666666666666666666667 > 0.2",
+        "dispersion: 0.2840990495755868621947759955 > 0.1"
+      ]
+    },
+    "target_month": "2027-11",
+    "rules_version": "provisional-split-price",
+    "refresh_error": null
+  },
+  "effective": [
+    {
+      "analyst_key": "argus research",
+      "firm": "Argus Research",
+      "target_price": 220.0,
+      "adjusted_price": 220.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 220.0
+    },
+    {
+      "analyst_key": "b of a securities",
+      "firm": "B of A Securities",
+      "target_price": 280.0,
+      "adjusted_price": 280.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 350.0
+    },
+    {
+      "analyst_key": "baird",
+      "firm": "Baird",
+      "target_price": 200.0,
+      "adjusted_price": 200.0,
+      "published_on": "2026-11-12",
+      "action": "Maintains",
+      "prior_target": 200.0
+    },
+    {
+      "analyst_key": "barclays",
+      "firm": "Barclays",
+      "target_price": 210.0,
+      "adjusted_price": 210.0,
+      "published_on": "2026-11-13",
+      "action": "Lowers",
+      "prior_target": 275.0
+    },
+    {
+      "analyst_key": "benchmark",
+      "firm": "Benchmark",
+      "target_price": 335.0,
+      "adjusted_price": 335.0,
+      "published_on": "2026-08-27",
+      "action": "Maintains",
+      "prior_target": 335.0
+    },
+    {
+      "analyst_key": "bernstein",
+      "firm": "Bernstein",
+      "target_price": 200.0,
+      "adjusted_price": 200.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 400.0
+    },
+    {
+      "analyst_key": "bmo capital",
+      "firm": "BMO Capital",
+      "target_price": 240.0,
+      "adjusted_price": 240.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 340.0
+    },
+    {
+      "analyst_key": "cantor fitzgerald",
+      "firm": "Cantor Fitzgerald",
+      "target_price": 250.0,
+      "adjusted_price": 250.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 250.0
+    },
+    {
+      "analyst_key": "china renaissance",
+      "firm": "China Renaissance",
+      "target_price": 319.0,
+      "adjusted_price": 319.0,
+      "published_on": "2026-06-05",
+      "action": "Announces",
+      "prior_target": null
+    },
+    {
+      "analyst_key": "citigroup",
+      "firm": "Citigroup",
+      "target_price": 225.0,
+      "adjusted_price": 225.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 285.0
+    },
+    {
+      "analyst_key": "craig-hallum",
+      "firm": "Craig-Hallum",
+      "target_price": 180.0,
+      "adjusted_price": 180.0,
+      "published_on": "2026-11-12",
+      "action": "Announces",
+      "prior_target": null
+    },
+    {
+      "analyst_key": "da davidson",
+      "firm": "DA Davidson",
+      "target_price": 200.0,
+      "adjusted_price": 200.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 200.0
+    },
+    {
+      "analyst_key": "evercore isi group",
+      "firm": "Evercore ISI Group",
+      "target_price": 184.0,
+      "adjusted_price": 184.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 186.0
+    },
+    {
+      "analyst_key": "freedom broker",
+      "firm": "Freedom Broker",
+      "target_price": 230.0,
+      "adjusted_price": 230.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 305.0
+    },
+    {
+      "analyst_key": "goldman sachs",
+      "firm": "Goldman Sachs",
+      "target_price": 220.0,
+      "adjusted_price": 220.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 300.0
+    },
+    {
+      "analyst_key": "hsbc",
+      "firm": "HSBC",
+      "target_price": 325.0,
+      "adjusted_price": 325.0,
+      "published_on": "2026-05-19",
+      "action": "Raises",
+      "prior_target": 295.0
+    },
+    {
+      "analyst_key": "jefferies",
+      "firm": "Jefferies",
+      "target_price": 250.0,
+      "adjusted_price": 250.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 300.0
+    },
+    {
+      "analyst_key": "jp morgan",
+      "firm": "JP Morgan",
+      "target_price": 230.0,
+      "adjusted_price": 230.0,
+      "published_on": "2026-11-18",
+      "action": "Raises",
+      "prior_target": 215.0
+    },
+    {
+      "analyst_key": "keybanc",
+      "firm": "Keybanc",
+      "target_price": 330.0,
+      "adjusted_price": 330.0,
+      "published_on": "2026-08-27",
+      "action": "Maintains",
+      "prior_target": 330.0
+    },
+    {
+      "analyst_key": "melius research",
+      "firm": "Melius Research",
+      "target_price": 185.0,
+      "adjusted_price": 185.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 315.0
+    },
+    {
+      "analyst_key": "mizuho",
+      "firm": "Mizuho",
+      "target_price": 220.0,
+      "adjusted_price": 220.0,
+      "published_on": "2026-11-16",
+      "action": "Lowers",
+      "prior_target": 250.0
+    },
+    {
+      "analyst_key": "morgan stanley",
+      "firm": "Morgan Stanley",
+      "target_price": 260.0,
+      "adjusted_price": 260.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 267.0
+    },
+    {
+      "analyst_key": "needham",
+      "firm": "Needham",
+      "target_price": 200.0,
+      "adjusted_price": 200.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 200.0
+    },
+    {
+      "analyst_key": "oppenheimer",
+      "firm": "Oppenheimer",
+      "target_price": 315.0,
+      "adjusted_price": 315.0,
+      "published_on": "2026-08-27",
+      "action": "Raises",
+      "prior_target": 265.0
+    },
+    {
+      "analyst_key": "piper sandler",
+      "firm": "Piper Sandler",
+      "target_price": 230.0,
+      "adjusted_price": 230.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 300.0
+    },
+    {
+      "analyst_key": "raymond james",
+      "firm": "Raymond James",
+      "target_price": 515.0,
+      "adjusted_price": 515.0,
+      "published_on": "2026-08-27",
+      "action": "Raises",
+      "prior_target": 352.0
+    },
+    {
+      "analyst_key": "rbc capital",
+      "firm": "RBC Capital",
+      "target_price": 230.0,
+      "adjusted_price": 230.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 230.0
+    },
+    {
+      "analyst_key": "rosenblatt",
+      "firm": "Rosenblatt",
+      "target_price": 300.0,
+      "adjusted_price": 300.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 300.0
+    },
+    {
+      "analyst_key": "stifel",
+      "firm": "Stifel",
+      "target_price": 205.0,
+      "adjusted_price": 205.0,
+      "published_on": "2026-11-12",
+      "action": "Lowers",
+      "prior_target": 315.0
+    },
+    {
+      "analyst_key": "td cowen",
+      "firm": "TD Cowen",
+      "target_price": 200.0,
+      "adjusted_price": 200.0,
+      "published_on": "2026-11-18",
+      "action": "Maintains",
+      "prior_target": 200.0
+    },
+    {
+      "analyst_key": "tigress financial",
+      "firm": "Tigress Financial",
+      "target_price": 425.0,
+      "adjusted_price": 425.0,
+      "published_on": "2026-05-27",
+      "action": "Raises",
+      "prior_target": 360.0
+    },
+    {
+      "analyst_key": "truist securities",
+      "firm": "Truist Securities",
+      "target_price": 174.0,
+      "adjusted_price": 174.0,
+      "published_on": "2026-11-13",
+      "action": "Lowers",
+      "prior_target": 346.0
+    },
+    {
+      "analyst_key": "ubs",
+      "firm": "UBS",
+      "target_price": 220.0,
+      "adjusted_price": 220.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 240.0
+    },
+    {
+      "analyst_key": "wedbush",
+      "firm": "Wedbush",
+      "target_price": 293.0,
+      "adjusted_price": 293.0,
+      "published_on": "2026-11-18",
+      "action": "Raises",
+      "prior_target": 275.0
+    },
+    {
+      "analyst_key": "wells fargo",
+      "firm": "Wells Fargo",
+      "target_price": 250.0,
+      "adjusted_price": 250.0,
+      "published_on": "2026-11-18",
+      "action": "Lowers",
+      "prior_target": 300.0
+    }
+  ],
+  "series": [
+    {
+      "on": "2021-11-30",
+      "n_analysts": 24,
+      "mean": 287.2395833333333,
+      "stdev": 78.98904296492326,
+      "dispersion": 0.2749935856621082,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2021-12-31",
+      "n_analysts": 24,
+      "mean": 287.2395833333333,
+      "stdev": 78.98904296492326,
+      "dispersion": 0.2749935856621082,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-01-31",
+      "n_analysts": 24,
+      "mean": 287.2395833333333,
+      "stdev": 78.98904296492326,
+      "dispersion": 0.2749935856621082,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-02-28",
+      "n_analysts": 22,
+      "mean": 297.2613636363636,
+      "stdev": 70.6433226241892,
+      "dispersion": 0.23764717271029662,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-03-31",
+      "n_analysts": 23,
+      "mean": 310.04347826086956,
+      "stdev": 67.42620765148274,
+      "dispersion": 0.21747339447259895,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-04-29",
+      "n_analysts": 24,
+      "mean": 306.0,
+      "stdev": 61.00730533590077,
+      "dispersion": 0.1993702788754927,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-05-31",
+      "n_analysts": 27,
+      "mean": 268.8333333333333,
+      "stdev": 58.01806747769314,
+      "dispersion": 0.2158142621612888,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-06-30",
+      "n_analysts": 26,
+      "mean": 266.34615384615387,
+      "stdev": 57.136987885391584,
+      "dispersion": 0.21452154296320305,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-07-29",
+      "n_analysts": 26,
+      "mean": 257.5,
+      "stdev": 60.26624262387693,
+      "dispersion": 0.2340436606752502,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-08-31",
+      "n_analysts": 26,
+      "mean": 233.76923076923077,
+      "stdev": 63.86943412450603,
+      "dispersion": 0.27321574321111497,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-09-30",
+      "n_analysts": 27,
+      "mean": 225.11111111111111,
+      "stdev": 65.89813428742958,
+      "dispersion": 0.2927360358276734,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-10-31",
+      "n_analysts": 27,
+      "mean": 220.92592592592592,
+      "stdev": 68.43858893811631,
+      "dispersion": 0.30978070433011573,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-11-30",
+      "n_analysts": 26,
+      "mean": 212.6153846153846,
+      "stdev": 55.35924632657271,
+      "dispersion": 0.26037272150703517,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2022-12-30",
+      "n_analysts": 28,
+      "mean": 204.78571428571428,
+      "stdev": 39.303526505482886,
+      "dispersion": 0.19192513815024778,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-01-31",
+      "n_analysts": 28,
+      "mean": 209.78571428571428,
+      "stdev": 38.25291772251777,
+      "dispersion": 0.1823428151567071,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-02-28",
+      "n_analysts": 32,
+      "mean": 248.03125,
+      "stdev": 40.91808053313509,
+      "dispersion": 0.16497147247830704,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-03-31",
+      "n_analysts": 33,
+      "mean": 268.4848484848485,
+      "stdev": 47.578304675109806,
+      "dispersion": 0.17721038987343382,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-04-28",
+      "n_analysts": 32,
+      "mean": 279.5,
+      "stdev": 47.27066880246416,
+      "dispersion": 0.16912582755801128,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-05-31",
+      "n_analysts": 32,
+      "mean": 433.1875,
+      "stdev": 88.80730771296811,
+      "dispersion": 0.20500893426742026,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-06-30",
+      "n_analysts": 33,
+      "mean": 435.969696969697,
+      "stdev": 88.41715219927806,
+      "dispersion": 0.2028057289619918,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-07-31",
+      "n_analysts": 34,
+      "mean": 462.70588235294116,
+      "stdev": 98.21822623296237,
+      "dispersion": 0.21226924052381899,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-08-31",
+      "n_analysts": 36,
+      "mean": 613.0,
+      "stdev": 130.8859918293125,
+      "dispersion": 0.21351711554537112,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-09-29",
+      "n_analysts": 36,
+      "mean": 613.0,
+      "stdev": 130.8859918293125,
+      "dispersion": 0.21351711554537112,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-10-31",
+      "n_analysts": 36,
+      "mean": 610.0833333333334,
+      "stdev": 130.7602768427782,
+      "dispersion": 0.21433182927377933,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-11-30",
+      "n_analysts": 36,
+      "mean": 627.1111111111111,
+      "stdev": 126.30434395375046,
+      "dispersion": 0.2014066434414873,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2023-12-29",
+      "n_analysts": 36,
+      "mean": 627.1111111111111,
+      "stdev": 126.30434395375046,
+      "dispersion": 0.2014066434414873,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-01-31",
+      "n_analysts": 38,
+      "mean": 636.3421052631579,
+      "stdev": 133.8559686431428,
+      "dispersion": 0.21035221076214491,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-02-29",
+      "n_analysts": 38,
+      "mean": 821.6052631578947,
+      "stdev": 165.63008922909202,
+      "dispersion": 0.2015932670544024,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-03-29",
+      "n_analysts": 39,
+      "mean": 923.0,
+      "stdev": 187.51827981068377,
+      "dispersion": 0.20316173327268014,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-04-30",
+      "n_analysts": 39,
+      "mean": 954.025641025641,
+      "stdev": 179.40669575891226,
+      "dispersion": 0.18805227872705615,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-05-31",
+      "n_analysts": 39,
+      "mean": 1139.5641025641025,
+      "stdev": 225.0889642682591,
+      "dispersion": 0.1975219856099297,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-06-28",
+      "n_analysts": 40,
+      "mean": 124.9875,
+      "stdev": 31.312217550801442,
+      "dispersion": 0.2505227926856801,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-07-31",
+      "n_analysts": 39,
+      "mean": 133.2051282051282,
+      "stdev": 32.22489188841404,
+      "dispersion": 0.24191930387837296,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-08-30",
+      "n_analysts": 39,
+      "mean": 144.7948717948718,
+      "stdev": 27.220521947874364,
+      "dispersion": 0.18799368797009033,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-09-30",
+      "n_analysts": 39,
+      "mean": 144.7948717948718,
+      "stdev": 27.220521947874364,
+      "dispersion": 0.18799368797009033,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-10-31",
+      "n_analysts": 39,
+      "mean": 145.82051282051282,
+      "stdev": 27.948139750608952,
+      "dispersion": 0.19166123620076475,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-11-29",
+      "n_analysts": 40,
+      "mean": 167.925,
+      "stdev": 23.430625915011976,
+      "dispersion": 0.13953030171214514,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2024-12-31",
+      "n_analysts": 40,
+      "mean": 168.75,
+      "stdev": 24.119095530943305,
+      "dispersion": 0.14292797351670106,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-01-31",
+      "n_analysts": 40,
+      "mean": 170.275,
+      "stdev": 25.660492930493316,
+      "dispersion": 0.15070029617086075,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-02-28",
+      "n_analysts": 40,
+      "mean": 172.175,
+      "stdev": 25.982131433855727,
+      "dispersion": 0.15090536624861756,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-03-31",
+      "n_analysts": 39,
+      "mean": 173.92307692307693,
+      "stdev": 22.830478953161915,
+      "dispersion": 0.13126768084524765,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-04-30",
+      "n_analysts": 40,
+      "mean": 166.6,
+      "stdev": 24.92018026851701,
+      "dispersion": 0.14958091397669274,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-05-30",
+      "n_analysts": 39,
+      "mean": 171.74358974358975,
+      "stdev": 23.561473848902654,
+      "dispersion": 0.13718982981594557,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-06-30",
+      "n_analysts": 37,
+      "mean": 175.75675675675674,
+      "stdev": 27.11232336186034,
+      "dispersion": 0.1542604896799681,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-07-31",
+      "n_analysts": 38,
+      "mean": 182.23684210526315,
+      "stdev": 29.492494886378196,
+      "dispersion": 0.16183607302272512,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-08-29",
+      "n_analysts": 37,
+      "mean": 205.86486486486487,
+      "stdev": 30.668625084352325,
+      "dispersion": 0.14897454747552002,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-09-30",
+      "n_analysts": 37,
+      "mean": 209.67567567567568,
+      "stdev": 30.97853562823249,
+      "dispersion": 0.1477450139526427,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-10-31",
+      "n_analysts": 37,
+      "mean": 218.45945945945945,
+      "stdev": 39.643967310855054,
+      "dispersion": 0.1814705914266531,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-11-28",
+      "n_analysts": 36,
+      "mean": 250.61111111111111,
+      "stdev": 46.85557004716136,
+      "dispersion": 0.18696525401217123,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2025-12-31",
+      "n_analysts": 36,
+      "mean": 255.19444444444446,
+      "stdev": 49.38410354091368,
+      "dispersion": 0.19351559023325268,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-01-30",
+      "n_analysts": 37,
+      "mean": 256.27027027027026,
+      "stdev": 48.932861401362224,
+      "dispersion": 0.19094240369651996,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-02-27",
+      "n_analysts": 37,
+      "mean": 263.7837837837838,
+      "stdev": 49.45207283327472,
+      "dispersion": 0.1874719974212259,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-03-31",
+      "n_analysts": 37,
+      "mean": 269.1081081081081,
+      "stdev": 48.639138209530046,
+      "dispersion": 0.18074200198379148,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-04-30",
+      "n_analysts": 37,
+      "mean": 269.1081081081081,
+      "stdev": 48.639138209530046,
+      "dispersion": 0.18074200198379148,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-05-29",
+      "n_analysts": 36,
+      "mean": 300.77777777777777,
+      "stdev": 60.02814154859184,
+      "dispersion": 0.19957638490481217,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-06-30",
+      "n_analysts": 37,
+      "mean": 301.27027027027026,
+      "stdev": 59.26430846857372,
+      "dispersion": 0.1967147585302976,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-07-31",
+      "n_analysts": 36,
+      "mean": 304.77777777777777,
+      "stdev": 57.43424121107602,
+      "dispersion": 0.18844628906295452,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-08-31",
+      "n_analysts": 35,
+      "mean": 330.62857142857143,
+      "stdev": 67.43017552571379,
+      "dispersion": 0.20394539780504517,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-09-30",
+      "n_analysts": 36,
+      "mean": 329.77777777777777,
+      "stdev": 66.6556657590169,
+      "dispersion": 0.20212297568435042,
+      "qualified": true,
+      "reason": null
+    },
+    {
+      "on": "2026-10-30",
+      "n_analysts": 36,
+      "mean": 329.77777777777777,
+      "stdev": 66.6556657590169,
+      "dispersion": 0.20212297568435042,
+      "qualified": true,
+      "reason": null
+    }
+  ],
+  "qualified_points": 60,
+  "detail_available": true,
+  "source": {
+    "configured": true,
+    "name": "yahoo-udh",
+    "is_fixture": false
+  }
+}

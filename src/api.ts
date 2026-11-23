@@ -552,13 +552,19 @@ export function resolveCandidate(
  * 沒有對應的倒數時間點可揭露）。
  * `"usage_limited"`（SECURITY-FIX-02）：這個瀏覽器／網路來源短時間內
  * 查詢次數超過上限（per-owner quota／source burst），稍後自然恢復。
+ *
+ * LIVE-T3（#398）「更新分析師資料」的重試：`"consensus_daily_cap"`＝今日
+ * 分析師資料的上游呼叫已達每日上限；`"consensus_not_retryable"`＝這一檔
+ * 現在不能重試（今天已成功、冷卻中、重試用完或別人正在處理）。
  */
 export type FailureStage =
   | "fetch" | "analyze" | "params" | "archived" | "rate_limited"
-  | "vendor_budget_exhausted" | "usage_limited" | null;
+  | "vendor_budget_exhausted" | "usage_limited"
+  | "consensus_daily_cap" | "consensus_not_retryable" | null;
 
 const STAGES = ["fetch", "analyze", "params", "archived", "rate_limited",
-                "vendor_budget_exhausted", "usage_limited"] as const;
+                "vendor_budget_exhausted", "usage_limited",
+                "consensus_daily_cap", "consensus_not_retryable"] as const;
 
 /**
  * SCALE-05（#260）：`stage === "rate_limited"` 時，後端額外揭露的
@@ -872,6 +878,20 @@ function isRevokedCredentialRefusal(resp: Response): boolean {
   return resp.status === 409 && resp.headers?.get(IDENTITY_STATE_HEADER) === "unknown";
 }
 
+/**
+ * OS-02（#391）：FastAPI 422 的物件陣列裡，後端自己寫的 `ValueError`
+ * 訊息（pydantic 會加上 `"Value error, "` 前綴）是給人看的中文句子——
+ * 取第一則顯示。pydantic 內建的英文型別錯誤不在此列，仍退回通用訊息，
+ * 不把英文技術字串直接丟到畫面上。
+ */
+function validationMessage(detail: unknown): string | null {
+  if (!Array.isArray(detail)) return null;
+  const msg = (detail[0] as { msg?: unknown } | undefined)?.msg;
+  const prefix = "Value error, ";
+  return typeof msg === "string" && msg.startsWith(prefix)
+    ? msg.slice(prefix.length) : null;
+}
+
 async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
   const { mayCreateUser = false, ...init } = apiInit ?? {};
   let resp = mayCreateUser
@@ -913,7 +933,8 @@ async function request<T>(url: string, apiInit?: ApiInit): Promise<T> {
       }
     }
     const message =
-      typeof detail === "string" ? detail : `請求失敗（HTTP ${resp.status}）`;
+      typeof detail === "string" ? detail
+        : validationMessage(detail) ?? `請求失敗（HTTP ${resp.status}）`;
     throw new ApiError(message, null, correlationId);
   }
   // TR3（#90）：永久刪除回 204 No Content——沒有主體可解析，`.json()`
@@ -1212,7 +1233,349 @@ export interface SettingsView {
    *  重推這條規則，推兩份遲早漂移，而漂移的後果正好是 AC 禁止的
    *  「畫面以為鎖著、其實已經發了請求」。 */
   historical_iv_enabled: boolean;
+  /** OS-02（#391）：機會搜尋設定——沒存過時後端回預設值，不會缺。 */
+  opportunity_search: OpportunitySearchSettings;
+  /** 設定頁要用的選項與預設值，由後端給（母體文案、家族、排序不在前端
+   *  另寫一份）。 */
+  opportunity_search_options: OpportunitySearchOptions;
   updated_at: string | null;
+}
+
+/** OS-02（#391）：Settings 選填鍵 `opportunity_search`。兩道門檻是百分比
+ *  數字 0–100（20 ＝ 20%）。 */
+export interface OpportunitySearchSettings {
+  universe_id: string;
+  custom_symbols: string[];
+  percentile_max: number;
+  dispersion_max: number;
+  strategies: string[];
+  sort: "return" | "cost" | "max_loss";
+}
+
+export interface UniverseOption {
+  id: string;
+  label: string;
+  /** 清單來源尚未定案（#382）——畫面照實標示，不包裝成正式清單。 */
+  provisional: boolean;
+  symbol_count: number | null;
+}
+
+/** 排序方式＋顯示文字。唯一來源是後端（`opportunity_settings`）：設定頁讀
+ *  `opportunity_search_options.sorts`，搜尋頁讀搜尋回應的 `sort_options`。 */
+export interface SortOption {
+  id: OpportunitySearchSettings["sort"];
+  label: string;
+}
+
+export interface OpportunitySearchOptions {
+  universes: UniverseOption[];
+  strategies: string[];
+  sorts: SortOption[];
+  custom_symbols_max: number;
+  defaults: OpportunitySearchSettings;
+}
+
+/** PUT 時的 `opportunity_search`：欄位層級的部分更新，沒送的欄位後端沿用
+ *  已存的值；值的驗證一律交給後端（前端不先吞掉不合法的輸入）。 */
+export type OpportunitySearchPatch = {
+  [K in keyof OpportunitySearchSettings]?: OpportunitySearchSettings[K] | string;
+};
+
+/** OS-03（#392）：`GET /api/opportunity/consensus` 的回應（只限 SU／SA）。
+ *  形狀以 `contracts/opportunity_consensus_sample.json` 為準。比例欄位
+ *  （dispersion／percentile／freshness_share）是 0–1；`thresholds` 是使用者
+ *  設定的百分比 0–100。`source.is_fixture` 為真時畫面必須標示
+ *  「測試資料，非真實市場資料」；`source.configured` 為假時 `items` 為空、
+ *  帶 `message`。 */
+export interface OpportunityConsensusResponse {
+  source: { configured: boolean; name: string | null; is_fixture: boolean };
+  universe: {
+    id: string;
+    label: string;
+    provisional: boolean;
+    symbols: number;
+    with_data: number;
+    insufficient: number;
+    /** 還沒建立共識資料（沒有快取、也還沒失敗過）的檔數（LIVE-T4／#400），
+     *  不含超出每日更新範圍的（`out_of_scope`）。 */
+    not_built: number;
+    /** 這個母體裡超出每日更新範圍（更新母體有上限）、不會被更新的檔數與代號。 */
+    out_of_scope?: number;
+    out_of_scope_symbols?: string[];
+    coverage: Record<string, number>;
+    as_of: string | null;
+  };
+  thresholds: { percentile_max: number; dispersion_max: number };
+  rules: { rules_version: string; provisional: boolean } & Record<string, unknown>;
+  items: ConsensusItem[];
+  message?: string;
+}
+
+export type ConsensusStatus =
+  | "ok" | "insufficient_analysts" | "insufficient_history" | "stale"
+  | "no_data" | "source_error" | "split_unresolved";
+
+export interface ConsensusItem {
+  symbol: string;
+  status: ConsensusStatus;
+  as_of: string | null;
+  n_analysts: number;
+  mean: number | null;
+  stdev: number | null;
+  dispersion: number | null;
+  percentile: number | null;
+  history_points: number;
+  coverage: string | null;
+  freshness_share: number | null;
+  high: number | null;
+  low: number | null;
+  median_published_on: string | null;
+  reasons: string[];
+  gate: { first: boolean; second: boolean; selected: boolean; reasons: string[] };
+  target_month: string | null;
+  rules_version: string | null;
+  /** 最新一次更新失敗、沿用上一份資料時才有（`as_of` 照實是上一份的日期）。 */
+  refresh_error: { day: string; message: string } | null;
+}
+
+export function getOpportunityConsensus(
+  signal?: AbortSignal,
+): Promise<OpportunityConsensusResponse> {
+  return request<OpportunityConsensusResponse>("/api/opportunity/consensus", { signal });
+}
+
+/** LIVE-T3（#398）：一檔分析師資料的更新狀態。`state`：`pending` 今天還沒
+ *  試過、`done` 今天已成功（同一交易日不再抓）、`cooling` 失敗冷卻中、
+ *  `retry_ready` 失敗但冷卻已過、`exhausted` 今天重試用完（下一個交易日）、
+ *  `in_progress` 別人正在抓。時間都是 ISO UTC。 */
+export type ConsensusRefreshState =
+  | "pending" | "done" | "cooling" | "retry_ready" | "exhausted" | "in_progress";
+
+export interface ConsensusRefreshSymbol {
+  symbol: string;
+  state: ConsensusRefreshState;
+  last_success_at: string | null;
+  last_attempt_at: string | null;
+  error: string | null;
+  retries_today: number;
+  /** 冷卻中＝最早可重試時間；用完＝下一個交易日（週末、週五後是下週一）
+   *  的美東零時；其餘 `null`。 */
+  next_retry_at: string | null;
+  retryable_now: boolean;
+  /** 這檔最新一份成功資料的日期。 */
+  as_of: string | null;
+}
+
+export interface ConsensusRefreshProgress {
+  total: number;
+  done: number;
+  failed: number;
+  pending: number;
+  in_progress: number;
+}
+
+export interface ConsensusRefreshPolicy {
+  max_retries: number;
+  retry_cooldown_seconds: number;
+  rate_limit_cooldown_seconds: number;
+  daily_upstream_cap: number;
+  lease_seconds: number;
+  call_spacing_seconds: number;
+  batch_size: number;
+}
+
+/** `GET /api/opportunity/consensus/status`（只限 SU／SA）。形狀以
+ *  `contracts/opportunity_consensus_status_sample.json` 為準。 */
+export interface ConsensusRefreshStatusResponse {
+  source: { configured: boolean; name: string | null; is_fixture: boolean };
+  today: string;
+  now: string;
+  policy: ConsensusRefreshPolicy;
+  daily_cap: number;
+  upstream_calls_today: number;
+  data_as_of: string | null;
+  progress: ConsensusRefreshProgress;
+  symbols: ConsensusRefreshSymbol[];
+  /** 來源回 429 後的全站暫停結束時間（ISO UTC）；沒有暫停為 `null`。 */
+  rate_limited_until?: string | null;
+  /** 使用者母體裡超出每日更新範圍的檔數與代號（進度不含它們）。 */
+  out_of_scope?: number;
+  out_of_scope_symbols?: string[];
+}
+
+/** `POST /api/opportunity/consensus/update`。形狀以
+ *  `contracts/opportunity_consensus_update_sample.json` 為準。`remaining`
+ *  非空就再呼叫一次（不帶 `symbols`）；`stopped_reason: "daily_cap"` 時
+ *  停下並顯示 `message`。 */
+export interface ConsensusUpdateResponse {
+  source: string;
+  as_of: string;
+  processed: number;
+  processed_symbols: string[];
+  succeeded: number;
+  failed: number;
+  already_attempted_today: number;
+  remaining: string[];
+  skipped: { symbol: string; state: ConsensusRefreshState;
+             next_retry_at: string | null; message: string }[];
+  stopped_reason: "daily_cap" | "rate_limited" | null;
+  message: string | null;
+  /** `stopped_reason: "rate_limited"` 時的全站暫停結束時間（ISO UTC）。 */
+  rate_limited_until?: string | null;
+  upstream_calls_today: number;
+  daily_cap: number;
+  progress: ConsensusRefreshProgress;
+}
+
+export function getConsensusRefreshStatus(
+  signal?: AbortSignal,
+): Promise<ConsensusRefreshStatusResponse> {
+  return request<ConsensusRefreshStatusResponse>("/api/opportunity/consensus/status",
+                                                 { signal });
+}
+
+/** 省略 `symbols`＝更新整個母體的下一批；給了＝只重試這幾檔（不能重試時
+ *  丟 `ApiError`，stage 為 `consensus_not_retryable`／`consensus_daily_cap`）。 */
+export function updateConsensus(symbols?: string[]): Promise<ConsensusUpdateResponse> {
+  return request<ConsensusUpdateResponse>("/api/opportunity/consensus/update",
+                                          POST_JSON(symbols ? { symbols } : {}));
+}
+
+/** LIVE-T2（#399）：有效集合的一筆——原始目標價與以資料日為基準的分割
+ *  換算值（`adjusted_price` 才是進平均／標準差的值）。 */
+export interface ConsensusEffectiveTarget {
+  analyst_key: string;
+  firm: string;
+  target_price: number;
+  adjusted_price: number;
+  published_on: string;
+  action: string | null;
+  prior_target: number | null;
+}
+
+/** 每月歷史序列的一點（月底取樣）。`qualified` 為假時 `reason` 說明為何
+ *  不進百分位（`insufficient_analysts`／`split_unresolved`）。 */
+export interface ConsensusSeriesPoint {
+  on: string;
+  n_analysts: number;
+  mean: number | null;
+  stdev: number | null;
+  dispersion: number | null;
+  qualified: boolean;
+  reason: string | null;
+}
+
+/** LIVE-T2（#399）：`GET /api/opportunity/consensus-detail/{symbol}`（只限 SU／SA，
+ *  只讀快取）。形狀以 `contracts/opportunity_detail_sample.json` 為準。
+ *  `item` 與共識清單的項目同一份；`detail_available` 為假時明細（`effective`／
+ *  `series`）尚未就緒、兩者為空。來源未設定時 `item` 為 null、帶 `message`。 */
+export interface OpportunityConsensusDetail {
+  symbol: string;
+  source: OpportunityConsensusResponse["source"];
+  thresholds: OpportunityConsensusResponse["thresholds"];
+  rules: OpportunityConsensusResponse["rules"];
+  item: ConsensusItem | null;
+  effective: ConsensusEffectiveTarget[];
+  series: ConsensusSeriesPoint[];
+  qualified_points: number;
+  detail_available: boolean;
+  message?: string;
+}
+
+export function getOpportunityConsensusDetail(
+  symbol: string,
+  signal?: AbortSignal,
+): Promise<OpportunityConsensusDetail> {
+  return request<OpportunityConsensusDetail>(
+    `/api/opportunity/consensus-detail/${encodeURIComponent(symbol)}`, { signal });
+}
+
+/** OS-04（#393）：`POST /api/opportunity/search` 的請求（每個欄位都可省略：
+ *  `symbols` 省略＝目前入選清單，續跑時傳回上次的 `remaining`；
+ *  `strategies`／`sort` 省略＝使用者設定）。 */
+export interface OpportunitySearchRequest {
+  symbols?: string[];
+  strategies?: OpportunitySearchSettings["strategies"];
+  sort?: OpportunitySearchSettings["sort"];
+}
+
+/** 一個家族的代表候選摘要列。每個數字都是既有引擎的原值：
+ *  `target_return`＝代表候選 `baseline_return`（劇本頭條同口徑）、
+ *  `entry_cost`＝`natural_cost`（每股，最差成交）、
+ *  `max_loss_per_contract`（每口、100 股；結果表顯示 ÷100 的每股值，與既有
+ *  詳細頁同口徑，#395）／`breakeven`／`buffer_days` 取同一個候選。
+ *  `scenario` 原封不動送進 `createScenario()` 即為「存成劇本」。 */
+export interface OpportunityRow {
+  symbol: string;
+  family: string;
+  subtype: string;
+  candidate_key: string;
+  legs: RepresentativeCandidateLeg[];
+  expiry: string;
+  target_month: string;
+  buffer_days: number;
+  entry_cost: number;
+  max_loss_per_contract: number;
+  target_return: number;
+  breakeven: number | null;
+  consensus: {
+    mean: number;
+    n_analysts: number;
+    dispersion: number;
+    percentile: number;
+    as_of: string;
+    coverage: string;
+  };
+  scenario: CreateScenarioRequest;
+}
+
+export interface OpportunitySearchFailure {
+  symbol: string;
+  reason: "fetch_failed" | "no_candidates" | "invalid_month" | "analysis_failed";
+  message: string;
+  stage?: string | null;
+  /** `no_candidates` 時：引擎自己對每個策略的狀態與訊息（方向不適用的
+   *  策略不列；LIVE-T4／#400）。`message` 已把它們寫成一句話。 */
+  strategies?: { strategy: string; status: string; message: string;
+                 n_qualified: number }[];
+}
+
+/** 形狀以 `contracts/opportunity_search_sample.json` 為準。`remaining` 非空
+ *  時以它當 `symbols` 再呼叫一次；`stopped_reason: "fused"` 時 `message` 是
+ *  既有降級文案。 */
+/** 有結果的股票，某個選了的家族沒有列（LIVE-T4／#400）——不是失敗；
+ *  `message` 已把引擎對每個策略的原因寫成一句話。 */
+export interface OpportunitySearchIncomplete {
+  symbol: string;
+  families: string[];
+  strategies: { strategy: string; status: string; message: string;
+                n_qualified: number }[];
+  message: string;
+}
+
+export interface OpportunitySearchResponse {
+  rows: OpportunityRow[];
+  failures: OpportunitySearchFailure[];
+  incomplete: OpportunitySearchIncomplete[];
+  remaining: string[];
+  processed: string[];
+  fetches_used: number;
+  fetch_cap: number;
+  truncated: boolean;
+  /** 超過 `fetch_cap` 而這次沒搜的檔（`truncated` ＝ 非空）。後端不自動
+   *  續跑；使用者明確以它當 `symbols` 再搜尋一次（同樣受上限約束）。 */
+  deferred: string[];
+  stopped_reason: "fused" | null;
+  message: string | null;
+  sort: OpportunitySearchSettings["sort"];
+  strategies: OpportunitySearchSettings["strategies"];
+  sort_options: SortOption[];
+}
+
+export function searchOpportunities(
+  body: OpportunitySearchRequest = {},
+): Promise<OpportunitySearchResponse> {
+  return request<OpportunitySearchResponse>("/api/opportunity/search", POST_JSON(body));
 }
 
 /** 送出時只需要模式與 provider，`default_label` 是後端給的顯示用資訊。 */
@@ -1228,6 +1591,8 @@ export function getSettings(signal?: AbortSignal): Promise<SettingsView> {
 export function saveSettings(body: {
   market_data: UsageChoice;
   historical_iv: UsageChoice;
+  /** 省略＝後端保留已存的機會搜尋設定（OS-02／#391）。 */
+  opportunity_search?: OpportunitySearchPatch;
 }): Promise<SettingsView> {
   return request<SettingsView>("/api/settings", {
     method: "PUT",

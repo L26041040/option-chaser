@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   detailHash,
+  isOpportunityHash,
   isPrivacyHash,
   isSettingsHash,
   isTrashHash,
+  opportunityHash,
+  opportunitySettingsHash,
   privacyHash,
   scenarioIdFromHash,
   settingsHash,
+  settingsSectionFromHash,
   trashHash,
 } from "./route";
 
@@ -83,5 +87,29 @@ describe("隱私頁路由（PB-12／#302，Anonymous Public Beta）", () => {
     expect(isTrashHash(privacyHash())).toBe(false);
     expect(isSettingsHash(privacyHash())).toBe(false);
     expect(scenarioIdFromHash(privacyHash())).toBeNull();
+  });
+});
+
+describe("機會搜尋路由（OS-05／#394）", () => {
+  it("機會搜尋頁的 hash 認得出自己，也不會被誤判成其他畫面", () => {
+    expect(opportunityHash()).toBe("#/opportunity");
+    expect(isOpportunityHash(opportunityHash())).toBe(true);
+    expect(isSettingsHash(opportunityHash())).toBe(false);
+    expect(isTrashHash(opportunityHash())).toBe(false);
+    expect(scenarioIdFromHash(opportunityHash())).toBeNull();
+  });
+
+  it("其他畫面的 hash 都不是機會搜尋頁", () => {
+    for (const h of ["", "#/", detailHash("x"), trashHash(), settingsHash(), privacyHash()]) {
+      expect(isOpportunityHash(h)).toBe(false);
+    }
+  });
+
+  it("設定頁的「機會搜尋」區塊連結仍是設定頁，並帶出要開的區塊", () => {
+    expect(opportunitySettingsHash()).toBe("#/settings/opportunity");
+    expect(isSettingsHash(opportunitySettingsHash())).toBe(true);
+    expect(settingsSectionFromHash(opportunitySettingsHash())).toBe("opportunity");
+    expect(settingsSectionFromHash(settingsHash())).toBeNull();
+    expect(settingsSectionFromHash(opportunityHash())).toBeNull();
   });
 });

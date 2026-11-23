@@ -35,6 +35,8 @@ SELECT 'Q01 table inventory' AS q, c.relname::text AS item,
               CASE WHEN c.relname = ANY (ARRAY[
                 'scenarios','results','snapshots','events','rate_cache',
                 'dividend_cache','treasury_year_cache','chain_backoff',
+                'consensus_snapshots','consensus_refresh_state','consensus_refresh_leases',
+                'consensus_details',
                 'data_source_settings','provider_credentials',
                 'provider_verifications','iv_observations','iv_backfill_runs',
                 'contract_iv_history','diagnostics','operational_metrics',

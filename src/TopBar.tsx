@@ -20,7 +20,8 @@
  * 形狀語言。
  */
 import BrandMark from "./BrandMark";
-import { settingsHash, trashHash } from "./route";
+import { opportunityHash, settingsHash, trashHash } from "./route";
+import { roleAtLeast } from "./superuser";
 import { ROLE_LABELS, useAuthRole } from "./useAuthRole";
 
 export default function TopBar({
@@ -29,7 +30,7 @@ export default function TopBar({
   createOpen,
   createPanelId,
 }: {
-  active: "library" | "trash" | "settings";
+  active: "library" | "trash" | "opportunity" | "settings";
   /** OG-02（#318）：頂欄「建立劇本」primary 按鈕——開既有右側抽屜
    *  （`App.tsx` 的 `showCreateForm`），不是 toggle：抽屜自己的
    *  `.drawer-close` 與遮罩點擊已經是既有的關閉手段，這裡只負責開。
@@ -71,6 +72,15 @@ export default function TopBar({
         >
           垃圾桶
         </a>
+        {/* OS-05（#394）：機會搜尋只給 Super User／Super Admin。 */}
+        {roleAtLeast(role, "superuser") && (
+          <a
+            aria-current={active === "opportunity" ? "page" : undefined}
+            href={opportunityHash()}
+          >
+            機會搜尋
+          </a>
+        )}
         <a
           aria-current={active === "settings" ? "page" : undefined}
           href={settingsHash()}

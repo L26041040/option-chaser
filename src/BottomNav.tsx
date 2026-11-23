@@ -32,12 +32,21 @@
  * 完全不用跟著改——沒有 `<BottomNav>` 的頁面（例如 `PrivacyPage`）
  * 也就不會多出這段空白。
  */
-import { GearIcon, HomeIcon, TrashIcon } from "./icons";
-import { settingsHash, trashHash } from "./route";
+import { GearIcon, HomeIcon, SearchIcon, TrashIcon } from "./icons";
+import { opportunityHash, settingsHash, trashHash } from "./route";
+import { roleAtLeast } from "./superuser";
+import { useAuthRole } from "./useAuthRole";
 
-export type BottomNavActive = "library" | "trash" | "settings";
+export type BottomNavActive = "library" | "trash" | "opportunity" | "settings";
 
+/**
+ * OS-05（#394）：Super User／Super Admin 多一格「機會」（機會搜尋頁），
+ * 排在設定之前；Normal 維持三格、看不到這個入口（資料顯示授權未確認前
+ * 只開放 SU/SA，#389 §7）。角色讀共用快取（`useAuthRole`，登入／登出
+ * 當下就更新）。
+ */
 export default function BottomNav({ active }: { active: BottomNavActive }) {
+  const role = useAuthRole();
   return (
     <>
       <div className="mtabs-spacer" aria-hidden="true" />
@@ -58,6 +67,16 @@ export default function BottomNav({ active }: { active: BottomNavActive }) {
           <TrashIcon />
           垃圾桶
         </a>
+        {roleAtLeast(role, "superuser") && (
+          <a
+            className={active === "opportunity" ? "mtab on" : "mtab"}
+            href={opportunityHash()}
+            aria-current={active === "opportunity" ? "page" : undefined}
+          >
+            <SearchIcon />
+            機會
+          </a>
+        )}
         <a
           className={active === "settings" ? "mtab on" : "mtab"}
           href={settingsHash()}

@@ -84,7 +84,9 @@ export default defineConfig({
       // 是手機版行為的假設（例如選劇本後建立表單應該不見），套用在
       // 這個寬螢幕專案上會誤判成迴歸。
       name: "Desktop",
-      testMatch: /desktop\.spec\.ts$/,
+      // OS-05（#394）：機會搜尋頁 e2e 兩種寬度都要驗——`opportunity.spec.ts`
+      // 不在上面 iPhone 的 testIgnore 內，這裡再讓桌面也跑它。
+      testMatch: [/desktop\.spec\.ts$/, /opportunity\.spec\.ts$/],
       use: {
         ...devices["Desktop Chrome"],
         browserName: "chromium",

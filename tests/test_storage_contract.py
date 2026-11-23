@@ -17,14 +17,17 @@ from dataclasses import replace
 
 from api_app.diagnostics import RETENTION_LIMIT, DiagnosticEvent
 from api_app.storage import (RETIRED_TABLES, BrowserIdentity, ChainBackoffEntry,
+                         ConsensusDetailRecord,
+                             ConsensusRefreshState, ConsensusSnapshotRecord,
                              ContractHistory, DataSourceSettings,
                              DividendCacheEntry, IvBackfillRun, IvObservation,
-                             Owner, ProviderCredential,
+                             Owner, OwnerSettingsBundle, ProviderCredential,
                              ProviderVerification, RateCacheEntry,
                              RateLimitBucket, ResolvedCredential, ResultRecord,
                              RoleSession, Scenario,
                              ScenarioExists, SuperUserAuditEvent,
-                             TreasuryYearCacheEntry, UsageSetting)
+                             TreasuryYearCacheEntry, UsageSetting,
+                             settings_bundle_merge_plan)
 from api_app.storage.memory import MemoryStorage
 
 TEST_DB_URL = os.environ.get("OC_TEST_DATABASE_URL")
@@ -89,7 +92,9 @@ def storage(request):
                      "iv_observations, iv_backfill_runs, contract_iv_history, "
                      "diagnostics, operational_metrics, "
                      "owners, browser_identities, superuser_audit_log, "
-                     "role_sessions, rate_limits, feedback, identity_tombstones "
+                     "role_sessions, rate_limits, feedback, identity_tombstones, "
+                     "consensus_snapshots, consensus_refresh_state, consensus_refresh_leases, "
+                     "consensus_details "
                      "RESTART IDENTITY")
     yield st
 
@@ -535,6 +540,226 @@ def test_rate_cache_overwrites_rather_than_accumulates(storage):
     entry = storage.get_rate_cache()
     assert entry.fetched_at == "2026-08-05T06:00:00+00:00"
     assert entry.note == "Treasury 曲線 2026-08-05"
+
+
+# ---------- 分析師共識快取（OS-03／#392，全站共用、不含 owner） ----------
+#
+# 每個 symbol 每個交易日一筆 Snapshot（point-in-time 稽核紀錄），另外
+# 每個 symbol 一筆「最後一次嘗試」狀態（attempted_day＋錯誤），供「同一
+# 交易日最多抓一次上游」與 cron 接續判斷。
+
+
+def _consensus_record(symbol="AAA", as_of="2026-09-28", *, source="fixture",
+                      status="ok", is_fixture=True):
+    return ConsensusSnapshotRecord(
+        symbol=symbol, as_of=as_of, source=source, is_fixture=is_fixture,
+        snapshot={"symbol": symbol, "as_of": as_of, "status": status,
+                  "mean": "120.5", "reasons": []},
+        computed_at=f"{as_of}T14:00:00+00:00")
+
+
+def test_consensus_cache_starts_empty(storage):
+    assert storage.latest_consensus_snapshots(["AAA"], source="fixture") == {}
+    assert storage.consensus_refresh_states() == {}
+
+
+def test_consensus_snapshot_roundtrips(storage):
+    rec = _consensus_record()
+    storage.save_consensus_snapshot(rec)
+    assert storage.latest_consensus_snapshots(["AAA"], source="fixture") == {"AAA": rec}
+
+
+def test_consensus_snapshots_keep_one_row_per_trading_day_and_return_the_latest(storage):
+    storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-25"))
+    storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-28"))
+    storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-24"))
+    got = storage.latest_consensus_snapshots(["AAA"], source="fixture")
+    assert got["AAA"].as_of == "2026-09-28"
+
+
+def test_consensus_snapshot_same_day_is_overwritten_not_duplicated(storage):
+    storage.save_consensus_snapshot(_consensus_record(status="stale"))
+    storage.save_consensus_snapshot(_consensus_record(status="ok"))
+    got = storage.latest_consensus_snapshots(["AAA"], source="fixture")
+    assert got["AAA"].snapshot["status"] == "ok"
+
+
+def test_consensus_snapshots_are_filtered_by_symbol_and_source(storage):
+    storage.save_consensus_snapshot(_consensus_record("AAA"))
+    storage.save_consensus_snapshot(_consensus_record("BBB"))
+    storage.save_consensus_snapshot(
+        _consensus_record("CCC", source="other", is_fixture=False))
+    got = storage.latest_consensus_snapshots(["AAA", "CCC", "ZZZ"], source="fixture")
+    assert set(got) == {"AAA"}
+    other = storage.latest_consensus_snapshots(["CCC"], source="other")
+    assert other["CCC"].is_fixture is False
+
+
+def test_consensus_refresh_state_is_one_row_per_symbol(storage):
+    first = ConsensusRefreshState(symbol="AAA", source="fixture",
+                                  attempted_day="2026-09-25",
+                                  attempted_at="2026-09-25T10:00:00+00:00",
+                                  error="逾時")
+    storage.save_consensus_refresh_state(first)
+    later = replace(first, attempted_day="2026-09-28",
+                    attempted_at="2026-09-28T10:00:00+00:00", error=None)
+    storage.save_consensus_refresh_state(later)
+    storage.save_consensus_refresh_state(replace(first, symbol="BBB"))
+    assert storage.consensus_refresh_states() == {"AAA": later,
+                                                  "BBB": replace(first, symbol="BBB")}
+
+
+# ---------- 個股共識明細（LIVE-T2／#399，全站共用、不含 owner） ----------
+#
+# 每個 symbol 只留最新一筆（有效集合＋每月序列）；跨天的 point-in-time 稽核
+# 由 consensus_snapshots（含合格歷史點）承擔，明細不跨天累積、大小有上限。
+
+
+def _detail_record(symbol="AAA", as_of="2026-09-28", *, source="fixture"):
+    return ConsensusDetailRecord(
+        symbol=symbol, as_of=as_of, source=source,
+        detail={"effective": [{"firm": "Firm A", "target_price": "120.5",
+                               "adjusted_price": "30.125",
+                               "published_on": "2026-09-01"}],
+                "series": [{"on": "2026-08-31", "n_analysts": 6,
+                            "dispersion": "0.081", "qualified": True,
+                            "reason": None}]},
+        computed_at=f"{as_of}T14:00:00+00:00")
+
+
+def test_consensus_detail_starts_empty(storage):
+    assert storage.get_consensus_detail("AAA") is None
+
+
+def test_consensus_detail_roundtrips(storage):
+    rec = _detail_record()
+    storage.save_consensus_detail(rec)
+    assert storage.get_consensus_detail("AAA") == rec
+
+
+def test_consensus_detail_keeps_only_the_latest_row_per_symbol(storage):
+    storage.save_consensus_detail(_detail_record(as_of="2026-09-25"))
+    later = _detail_record(as_of="2026-09-28", source="other")
+    storage.save_consensus_detail(later)
+    storage.save_consensus_detail(_detail_record("BBB"))
+    assert storage.get_consensus_detail("AAA") == later
+    assert storage.get_consensus_detail("BBB").symbol == "BBB"
+# ---------- 分析師資料更新：重試狀態、處理中標記、每日上游上限（LIVE-T3／#398） ----------
+
+
+def test_consensus_refresh_state_new_fields_default_for_old_rows(storage):
+    """舊列（#392 寫的）沒有新欄位：讀回來 attempts=1、其餘 None。"""
+    old = ConsensusRefreshState(symbol="AAA", source="fixture",
+                                attempted_day="2026-09-28",
+                                attempted_at="2026-09-28T10:00:00+00:00")
+    storage.save_consensus_refresh_state(old)
+    got = storage.get_consensus_refresh_state("AAA")
+    assert got == old
+    assert (got.attempts, got.next_retry_at, got.last_success_at) == (1, None, None)
+
+
+def test_consensus_refresh_state_roundtrips_retry_fields(storage):
+    st = ConsensusRefreshState(symbol="AAA", source="yahoo-udh",
+                               attempted_day="2026-09-28",
+                               attempted_at="2026-09-28T10:00:00+00:00",
+                               error="Yahoo 限流（分析師資料 429）", attempts=3,
+                               next_retry_at="2026-09-28T10:30:00+00:00",
+                               last_success_at="2026-09-25T10:00:00+00:00")
+    storage.save_consensus_refresh_state(st)
+    assert storage.get_consensus_refresh_state("AAA") == st
+    assert storage.consensus_refresh_states() == {"AAA": st}
+    assert storage.get_consensus_refresh_state("ZZZ") is None
+
+
+def test_consensus_refresh_lease_is_exclusive_until_it_expires(storage):
+    assert storage.acquire_consensus_refresh_lease("AAA", "h1", now=1000.0,
+                                                   ttl_seconds=120) is True
+    # 別人在逾時前拿不到；同一檔以外的 symbol 不受影響。
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1100.0,
+                                                   ttl_seconds=120) is False
+    assert storage.acquire_consensus_refresh_lease("BBB", "h2", now=1100.0,
+                                                   ttl_seconds=120) is True
+    assert storage.consensus_refresh_leases(now=1100.0) == {"AAA": 1120.0,
+                                                            "BBB": 1220.0}
+    # 逾時（函式中斷、沒釋放）後可以重新取得。
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1120.0,
+                                                   ttl_seconds=120) is True
+    assert storage.consensus_refresh_leases(now=1120.0)["AAA"] == 1240.0
+
+
+def test_consensus_refresh_lease_release_only_by_its_holder(storage):
+    storage.acquire_consensus_refresh_lease("AAA", "h1", now=1000.0, ttl_seconds=120)
+    storage.release_consensus_refresh_lease("AAA", "someone-else")
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1001.0,
+                                                   ttl_seconds=120) is False
+    storage.release_consensus_refresh_lease("AAA", "h1")
+    assert storage.consensus_refresh_leases(now=1001.0) == {}
+    assert storage.acquire_consensus_refresh_lease("AAA", "h2", now=1001.0,
+                                                   ttl_seconds=120) is True
+
+
+
+def test_consensus_source_rate_limit_pause_is_shared_and_expires(storage):
+    """429 後的全站暫停（LIVE-T3／#398）存在既有的處理中標記表，不用新表。"""
+    from api_app import consensus_cache
+
+    class _Src:
+        name = "yahoo-udh"
+
+    assert consensus_cache.rate_limited_until(storage, _Src, now=1000.0) is None
+    consensus_cache.pause_source(storage, _Src, now=1000.0, seconds=1800)
+    assert consensus_cache.rate_limited_until(storage, _Src, now=2799.0) == 2800.0
+    assert consensus_cache.rate_limited_until(storage, _Src, now=2800.0) is None
+    consensus_cache.pause_source(storage, _Src, now=2800.0, seconds=60)
+    assert consensus_cache.rate_limited_until(storage, _Src, now=2801.0) == 2860.0
+
+def test_rate_limit_count_reads_the_bucket_without_consuming(storage):
+    bucket = RateLimitBucket("consensus_upstream", "yahoo-udh", 86400, 1_790_000_000, 2)
+    assert storage.rate_limit_count(bucket) == 0
+    assert storage.rate_limit_consume([bucket]) is None
+    assert storage.rate_limit_count(bucket) == 1
+    assert storage.rate_limit_consume([bucket]) is None
+    assert storage.rate_limit_consume([bucket]) == 0          # 已達上限：不扣
+    assert storage.rate_limit_count(bucket) == 2
+
+
+def _owner_with_role(storage, owner_id, *, owner_role="normal", device_role=None):
+    now = "2026-10-24T00:00:00+00:00"
+    token = f"tok-{owner_id}-" + "q" * 24
+    storage.create_owner_with_token(
+        Owner(owner_id=owner_id, created_at=now),
+        BrowserIdentity(token=token, owner_id=owner_id, issued_at=now,
+                        last_seen_at=now))
+    storage.set_owner_role(owner_id, owner_role)
+    storage.set_credential_role(token, device_role)
+    return token
+
+
+def _custom(storage, owner, symbols, universe="custom"):
+    storage.save_settings(replace(_settings(owner=owner), opportunity_search={
+        "universe_id": universe, "custom_symbols": symbols}))
+
+
+def test_opportunity_custom_symbols_unions_only_privileged_owners(storage):
+    """每日共識更新的母體只併入**目前**權限為 SU／SA 的 owner 的自訂清單：
+    owner 層級是特權帳號，或名下任一顆裝置憑證是 SU／SA。Normal、沒有
+    owner 紀錄的、被降回 Normal 的都不算（Normal 本來就寫不進這個鍵，
+    這裡是第二道防線）。"""
+    _owner_with_role(storage, "su", owner_role="superuser")
+    _owner_with_role(storage, "sa-device", device_role="superadmin")
+    _owner_with_role(storage, "normal")
+    demoted = _owner_with_role(storage, "demoted", owner_role="superuser",
+                               device_role="superuser")
+    storage.save_settings(_settings(owner="su"))      # 沒存 opportunity_search
+    _custom(storage, "su", ["TSLA", "BRK.B"])
+    _custom(storage, "sa-device", ["PLTR", "TSLA"], universe="sample-large-cap")
+    _custom(storage, "normal", ["NORM"])
+    _custom(storage, "ghost", ["GHOST"])              # 沒有 owner 紀錄
+    _custom(storage, "demoted", ["DEMO"])
+    assert storage.opportunity_custom_symbols() == ["BRK.B", "DEMO", "PLTR", "TSLA"]
+    storage.set_owner_role("demoted", "normal")
+    storage.set_credential_role(demoted, None)
+    assert storage.opportunity_custom_symbols() == ["BRK.B", "PLTR", "TSLA"]
 
 
 # ---------- 配息資料快取（#123，per-symbol） ----------
@@ -2089,6 +2314,74 @@ def test_settings_start_out_unset(storage):
 def test_saved_settings_read_back_identically(storage):
     storage.save_settings(_settings())
     assert storage.get_settings(owner=OWNER) == _settings()
+
+
+def test_opportunity_search_roundtrips_inside_the_settings_row(storage):
+    """OS-02（#391）：選填鍵跟兩列資料源存在同一份 JSON，不需要 DDL。"""
+    opp = {"universe_id": "custom", "custom_symbols": ["TSLA", "BRK.B"],
+           "percentile_max": 12.5, "dispersion_max": 8.0,
+           "strategies": ["single-leg", "butterfly"], "sort": "cost"}
+    storage.save_settings(replace(_settings(), opportunity_search=opp))
+    got = storage.get_settings(owner=OWNER)
+    assert got.opportunity_search == opp
+    assert got.market_data == _settings().market_data
+
+
+def test_update_settings_is_an_atomic_read_modify_write(storage):
+    """兩個請求同時對同一 owner 做「讀 → 合併 → 寫」：各自改不同欄位，
+    兩個改動都要留下（不是後寫的蓋掉先寫的）。`mutate` 刻意在讀到之後
+    停一下，讓非原子的實作一定撞上 lost update。"""
+    import threading
+    import time as _time
+
+    storage.save_settings(replace(_settings(), opportunity_search={}))
+
+    def patch(field, value):
+        def mutate(current):
+            opp = dict(current.opportunity_search or {})
+            _time.sleep(0.2)
+            opp[field] = value
+            return replace(current, opportunity_search=opp)
+        return lambda: storage.update_settings(OWNER, mutate)
+
+    threads = [threading.Thread(target=patch("percentile_max", 30.0)),
+               threading.Thread(target=patch("dispersion_max", 5.0))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert storage.get_settings(owner=OWNER).opportunity_search == {
+        "percentile_max": 30.0, "dispersion_max": 5.0}
+
+
+def test_update_settings_sees_none_first_and_writes_nothing_when_mutate_raises(storage):
+    seen = []
+
+    def boom(current):
+        seen.append(current)
+        raise ValueError("驗證失敗")
+
+    with pytest.raises(ValueError):
+        storage.update_settings(OWNER, boom)
+    assert seen == [None]
+    assert storage.get_settings(owner=OWNER) is None
+    saved = storage.update_settings(OWNER, lambda current: _settings())
+    assert saved == _settings() == storage.get_settings(owner=OWNER)
+
+
+def test_settings_saved_without_opportunity_search_read_it_back_as_none(storage):
+    storage.save_settings(_settings())
+    assert storage.get_settings(owner=OWNER).opportunity_search is None
+
+
+def test_differing_opportunity_search_is_a_settings_conflict():
+    """搬遷比對把它當設定內容：兩邊不同就不能替使用者挑一份。"""
+    a = _settings()
+    b = replace(a, opportunity_search={"sort": "cost"})
+    conflicts, redundant = settings_bundle_merge_plan(
+        OwnerSettingsBundle(settings=a, credentials={}, verifications={}),
+        OwnerSettingsBundle(settings=b, credentials={}, verifications={}))
+    assert conflicts == ["owner_settings"] and redundant == []
 
 
 def test_saving_settings_again_overwrites_the_single_row(storage):

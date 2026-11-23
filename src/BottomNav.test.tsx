@@ -11,11 +11,13 @@
  * 檔頭說明，唯一建立入口收斂到劇本庫首頁標題列。
  */
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import BottomNav, { type BottomNavActive } from "./BottomNav";
+import type { Role } from "./superuser";
 
-const ALL: BottomNavActive[] = ["library", "trash", "settings"];
-const LABEL: Record<BottomNavActive, string> = {
+// Normal 看得到的三格（「機會」只給 SU/SA，見檔尾那組測試）。
+const ALL: Exclude<BottomNavActive, "opportunity">[] = ["library", "trash", "settings"];
+const LABEL: Record<(typeof ALL)[number], string> = {
   library: "劇本庫",
   trash: "垃圾桶",
   settings: "設定",
@@ -67,5 +69,34 @@ describe("BottomNav：三格、當前 tab 指示（OG-09／#319；SW-04／#333 �
     expect(
       spacer!.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+});
+
+describe("BottomNav：機會分頁只給 Super User／Super Admin（OS-05／#394）", () => {
+  function stubRole(role: Role) {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, status: 200, headers: new Headers(), json: async () => ({ role }),
+    }) as Response));
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each(["superuser", "superadmin"] as const)("%s：四格，「機會」連到機會搜尋頁", async (role) => {
+    stubRole(role);
+    render(<BottomNav active="opportunity" />);
+    const tab = await screen.findByRole("link", { name: /機會/ });
+    expect(tab).toHaveAttribute("href", "#/opportunity");
+    expect(tab).toHaveAttribute("aria-current", "page");
+    expect(screen.getAllByRole("link")).toHaveLength(4);
+  });
+
+  it("normal：維持三格、沒有機會分頁", async () => {
+    stubRole("normal");
+    render(<BottomNav active="library" />);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("link", { name: /機會/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link")).toHaveLength(3);
   });
 });

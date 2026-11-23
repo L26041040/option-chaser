@@ -427,6 +427,10 @@ export function failureLabel(stage: FailureStage): string {
       return "今日查詢預算已用完，稍後或明天再試";
     case "usage_limited":
       return "查詢太頻繁，請稍後再試";
+    case "consensus_daily_cap":
+      return "今日分析師資料更新已達每日上限，下一個交易日再試";
+    case "consensus_not_retryable":
+      return "這一檔現在不能重試";
     default:
       return "刷新失敗";
   }

@@ -322,6 +322,103 @@ degradation／cleanup lifecycle 可驗證／CI 正常／storage 成長可
 
 ---
 
+## 選擇權機會搜尋器（施工中：真實資料源 Yahoo 已接線，#397；規格 #389、`docs/spec/options-scanner/`）
+
+**Opportunity Search（選擇權機會搜尋器）** — 在使用者選的搜尋母體內，用分析師共識篩出
+標的並產生劇本，再由既有引擎窮舉、跨標的排序的功能。排名口徑與 Scenario Bet Ranking
+相同。
+_Avoid_: 掃描器推薦、選股器
+
+**Search Universe（搜尋母體）** — 使用者選定的標的集合。
+_Avoid_: 股票池
+
+**Consensus Target（共識目標價）** — 某檔股票目前有效的個別分析師目標價的**平均**。
+_Avoid_: 目標價（單獨使用時會和劇本的 target_price 混淆）、中位目標價
+
+**Target Dispersion（目標價分歧度）** — 個別目標價的標準差除以平均。
+
+**Dispersion Percentile（分歧度歷史百分位）** — 今天的分歧度在**該股票自身**歷史分歧度
+序列中的位置；越低代表比它自己平常更有共識。
+計算採 midrank：`(較低筆數 + 0.5 × 同值筆數) / 歷史筆數`，所以歷史全同值時是 50%。
+_Avoid_: 橫斷面排名（跟別的股票比不是這個詞）
+
+**Consensus Gate（共識門檻）** — 兩道都要通過的篩選：Dispersion Percentile 不高於
+使用者設定值，且 Target Dispersion 不高於使用者設定的絕對上限。兩個設定各自獨立。
+
+**Consensus Scenario（共識劇本）** — 通過 Consensus Gate 的股票，由系統以 Consensus
+Target 為目標價產生的 Scenario；形狀與使用者自建的 Scenario 相同，時間語意仍是月級。
+_Avoid_: 推薦、預測
+
+**Opportunity（機會）** — 一個 Consensus Scenario 底下的一個 Candidate，放在跨標的
+比較表上的一列。它顯示的報酬是目標價成立時的條件情境報酬。
+_Avoid_: 期望報酬、勝率、預期獲利
+
+**Analyst Target Record（個別目標價紀錄）** — 一位分析師（或一家機構）對一檔股票、在某
+一天發布的**一個**目標價，附來源與抓取時間。只有共識平均／高低／中位數／人數、或只有評級
+沒有目標價的資料都**不是**這種紀錄，不得拿來算標準差。
+_Avoid_: 共識資料（指的是彙總值，不是個別紀錄）
+
+**Analyst Source（分析師資料來源）** — 回傳 Analyst Target Record（與分割事件、覆蓋程度）
+的可注入介面。唯一的真實來源是 `YahooAnalystSource`（Yahoo `upgradeDowngradeHistory`，
+US$0、不需金鑰；Owner 以個人自用為優先採用，#389 決策、#397 接線）：部署環境預設啟用，
+`OC_ANALYST_SOURCE=off`（或任何非 `yahoo`／`on` 的值）關閉，關閉時照實顯示「尚未設定
+分析師資料來源」。`create_app()` 本身預設仍是「未設定」（測試不連外）。
+_Avoid_: 爬蟲（它走的是 Yahoo 網頁本身的公開 cookie＋crumb 流程，不繞過任何防護）、
+API key（這個來源不需要）
+
+**Split Basis（分割基準）** — 一筆目標價是用哪次分割之後的股數寫的。Yahoo 的事件史在
+分割前後混著兩種基準（AAPL 2020：同一天 470 與 121.25），所以每筆紀錄依發布當週實際股價
+判斷，寫進 `split_adjusted_through`，再由共識引擎換算；比例小於 2 倍的分割不判斷。
+_Avoid_: 「Yahoo 目標價未做分割調整」（只對了一半）
+
+**Fixture Source（固定測試資料來源）** — `FixtureAnalystSource`：讀
+`tests/fixtures/analyst_targets_fixture.json`（虛構 ticker AAA…GGG）的 Analyst Source，
+只在測試與本機驗證站注入。它的結果一路帶 `is_fixture`，畫面固定標示「測試資料，非真實
+市場資料」。
+_Avoid_: 範例資料、demo 資料（聽起來像可以上線）
+
+**Consensus Snapshot（共識快照）** — 某檔股票在某個美東交易日由 Analyst Target Record
+算出的一筆結果：有效分析師數、Consensus Target、標準差、Target Dispersion、Dispersion
+Percentile、覆蓋程度、資料品質狀態（`status`）與原因。全站共用、不屬於任何使用者（不含
+owner_id），存在共識快取；**成功**的股票同一交易日不再向來源抓，失敗時保留上一份成功
+的快照並標它的日期。Consensus Gate 在**讀取時**才用每位使用者自己的門檻套上去，所以改
+門檻不必重抓來源。
+_Avoid_: 共識分數、評分
+
+**Analyst Data Update（更新分析師資料）** — 把 Consensus Snapshot 更新到今天的動作：
+SU／SA 在機會搜尋頁按鈕觸發（一次一小批、依 `remaining` 自動續跑），每日 cron 也走同一套
+核心（LIVE-T3／#398）。失敗的股票同一交易日可以有限次**重試**（預設 3 次、每次先過 15
+分鐘冷卻；429 有 `Retry-After` 取它和冷卻較長者，沒有則冷卻 30 分鐘），用完改到下一個
+交易日（週末算前一個週五的交易日；不維護假日表）。遇到 429 時**整個來源暫停**同樣長的
+時間：這次立刻停、剩下的不抓，暫停期間續跑、cron、重試都不呼叫來源（`rate_limited_until`）。
+更新母體有上限，使用者自訂清單超出的部分列為**超出每日更新範圍**（`out_of_scope`），
+不算「建立中」。每次向來源抓一檔都算一次**上游呼叫**，重試也算，全站每日有上限（預設 400）；
+同一檔同一時間只有一次上游呼叫（**處理中標記**，逾時 120 秒自動失效）。參數都可由
+`create_app(consensus_refresh_policy=)` 或 `CONSENSUS_*` 環境變數設定。
+_Avoid_: 刷新（那是劇本的 Refresh，跟這個無關）
+
+**疑似分割（split_unresolved）** — 同一券商有效期內前後兩筆目標價、套用已知分割後比值仍接近
+常見分割比例（2、3、4、5、8、10、15、20 倍）→ 疑似缺分割資訊，整檔不入選、該月歷史點不計。
+後一筆**自己寫了前值**（Yahoo `priorPriceTarget`）時，前值→後一筆是券商明確的調整，只看
+「前一筆→前值」這段：前值等於前一筆原值，或這段不接近分割比例 → 不算疑似分割（LIVE-T2／
+#399：NVDA Bernstein 400→200、prior=400、Lowers）。`Adjusts`（因分割改寫基準）不算交代。
+**週線收盤也能排除**：兩筆之間的週線收盤（已調整全部已知分割、只用取樣日當天以前可得的；
+最後一根最早算在抓取日）完整覆蓋、沒有任何一週跳動達分割比例的一半（對數），且這段期間
+沒有已知分割 → 這次跳動是真的調整，不算疑似分割（AMD 300→600、INTC 45→131）。
+_Avoid_: 「目標價砍半就是分割」
+
+**Consensus Detail（個股共識明細）** — Consensus Snapshot 同一次計算的有效集合（每位券商的
+原始目標價、發布日、分割換算後的值）與每月序列（每個月底取樣點的人數、平均、標準差、D、
+是否合格與原因）。全站共用、不含 owner_id，每個 symbol 只留最新一筆；只給 SU／SA 看。
+_Avoid_: 歷史共識表（每日的 point-in-time 紀錄仍是 Consensus Snapshot）
+
+**Opportunity 的最大損失（每股）** — 結果表的「最大損失 / 股」＝候選的
+`max_loss_per_contract ÷ 100`，與淨成本同一個每股口徑，也與既有詳細頁 Max Loss 的顯示
+值相同；存成劇本後兩邊是同一個數字。（既有桌面詳細頁那一列的標籤寫「每口」但數字是
+÷100 後的每股值——已知、未改，交由 Owner 決定。）
+
+---
+
 ## 資料源
 
 **Cboe** — 延遲報價，chain 的主資料源。盤外報價凍結而非歸零。

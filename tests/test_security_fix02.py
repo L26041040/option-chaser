@@ -460,9 +460,10 @@ def test_limits_are_configurable_without_code_changes(monkeypatch):
 
 # ---------- SECURITY-P1-VENDOR-ATTEMPT-001：每個上游 attempt 各扣一次 ----------
 #
-# 一次 logical 抓鏈最多三個真正的上游請求：自訂 provider →（失敗）Cboe →
-# （失敗）yfinance。每一個都要先過 global fuse＋原子扣 owner／source／tier，
-# 成功或失敗都算；被擋的那個 attempt 不送出、不扣其他層。
+# 一次 logical 抓鏈最多四個真正的上游請求：自訂 provider →（失敗）Cboe →
+# （失敗）Yahoo 直連 →（失敗）yfinance（OPTION-CHASER-PRODUCTION-DELIVERY-001
+# 在 Cboe 與 yfinance 之間插入 Yahoo 直連）。每一個都要先過 global fuse＋原子
+# 扣 owner／source／tier，成功或失敗都算；被擋的那個 attempt 不送出、不扣其他層。
 
 PROVIDER = "marketdata-app"
 
@@ -484,12 +485,14 @@ class ScriptedProvider:
 
 
 def _chain_env(monkeypatch, *, custom_provider: bool):
-    """custom／Cboe／yfinance 三個 attempt 各自可控；呼叫端設 `.ok`。
-    `yf.available()` 固定為真（yfinance 是選用依賴，不讓測試結果取決於
+    """custom／Cboe／Yahoo 直連／yfinance 四個 attempt 各自可控；呼叫端設
+    `.ok`。`yf.available()` 固定為真（yfinance 是選用依賴，不讓測試結果取決於
     這台機器有沒有裝）。"""
-    from option_chaser.data import yf
+    from option_chaser.data import yahoo_options, yf
 
     custom, cboe, yfin = ScriptedProvider(True), ScriptedProvider(True), ScriptedProvider(True)
+    yahoo = ScriptedProvider(True)
+    monkeypatch.setattr(yahoo_options, "fetch_chain", yahoo)
     monkeypatch.setattr(yf, "fetch_chain", yfin)
     monkeypatch.setattr(yf, "available", lambda: True)
     storage = MemoryStorage()
@@ -513,7 +516,7 @@ def _chain_env(monkeypatch, *, custom_provider: bool):
             provider=PROVIDER, token="fake-provider-token",
             updated_at="2026-09-01T00:00:00+00:00", owner_id=owner))
     return dict(app=app, storage=storage, clock=clock, c=c, sid=sid, owner=owner,
-                custom=custom, cboe=cboe, yf=yfin)
+                custom=custom, cboe=cboe, yahoo=yahoo, yf=yfin)
 
 
 @pytest.fixture
@@ -546,7 +549,7 @@ def _delta(before, after):
 
 
 def _calls(ch):
-    return (ch["custom"].calls, ch["cboe"].calls, ch["yf"].calls)
+    return (ch["custom"].calls, ch["cboe"].calls, ch["yahoo"].calls, ch["yf"].calls)
 
 
 def _call_delta(ch, before):
@@ -556,7 +559,7 @@ def _call_delta(ch, before):
 def test_A_custom_success_is_exactly_one_attempt(chain):
     before, calls = _usage(chain), _calls(chain)
     assert _refresh(chain["c"], chain["sid"]).status_code == 200
-    assert _call_delta(chain, calls) == (1, 0, 0)
+    assert _call_delta(chain, calls) == (1, 0, 0, 0)
     assert _delta(before, _usage(chain)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
 
 
@@ -564,16 +567,24 @@ def test_B_custom_fail_then_default_success_is_two_attempts(chain):
     chain["custom"].ok = False
     before, calls = _usage(chain), _calls(chain)
     assert _refresh(chain["c"], chain["sid"]).status_code == 200
-    assert _call_delta(chain, calls) == (1, 1, 0)
+    assert _call_delta(chain, calls) == (1, 1, 0, 0)
     assert _delta(before, _usage(chain)) == {"owner": 2, "source": 2, "tier": 2, "fuse": 2}
 
 
-def test_C_custom_fail_cboe_fail_yfinance_success_is_three_attempts(chain):
+def test_C_custom_fail_cboe_fail_yahoo_success_is_three_attempts(chain):
     chain["custom"].ok = chain["cboe"].ok = False
     before, calls = _usage(chain), _calls(chain)
     assert _refresh(chain["c"], chain["sid"]).status_code == 200
-    assert _call_delta(chain, calls) == (1, 1, 1)
+    assert _call_delta(chain, calls) == (1, 1, 1, 0)
     assert _delta(before, _usage(chain)) == {"owner": 3, "source": 3, "tier": 3, "fuse": 3}
+
+
+def test_C2_custom_cboe_yahoo_fail_yfinance_success_is_four_attempts(chain):
+    chain["custom"].ok = chain["cboe"].ok = chain["yahoo"].ok = False
+    before, calls = _usage(chain), _calls(chain)
+    assert _refresh(chain["c"], chain["sid"]).status_code == 200
+    assert _call_delta(chain, calls) == (1, 1, 1, 1)
+    assert _delta(before, _usage(chain)) == {"owner": 4, "source": 4, "tier": 4, "fuse": 4}
 
 
 def test_D_fallback_blocked_by_source_quota_is_not_sent_and_not_charged(chain):
@@ -587,8 +598,8 @@ def test_D_fallback_blocked_by_source_quota_is_not_sent_and_not_charged(chain):
 
     r = _refresh(chain["c"], chain["sid"])
     assert r.status_code == 429 and _stage(r) == "usage_limited"
-    # 自訂 attempt 放行並失敗；Cboe／yfinance 都沒有送出
-    assert _call_delta(chain, calls) == (1, 0, 0)
+    # 自訂 attempt 放行並失敗；Cboe／Yahoo／yfinance 都沒有送出
+    assert _call_delta(chain, calls) == (1, 0, 0, 0)
     # 只有第一個 attempt 扣到；被擋的第二個不扣 owner／tier
     assert _delta(before, _usage(chain)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
     assert _metric(storage, "source_burst_block_count") == 1
@@ -606,7 +617,7 @@ def test_E_fallback_blocked_by_global_fuse_is_not_sent(chain):
 
     r = _refresh(chain["c"], chain["sid"])
     assert r.status_code == 429 and _stage(r) == "vendor_budget_exhausted"
-    assert _call_delta(chain, calls) == (1, 0, 0)
+    assert _call_delta(chain, calls) == (1, 0, 0, 0)
     assert _delta(before, _usage(chain)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
     assert _usage(chain)["fuse"] == 2000
     assert _metric(storage, "global_fuse_block_count") == 1
@@ -618,7 +629,7 @@ def test_F_superuser_fallback_still_pays_source_and_fuse_per_attempt(chain, pass
     chain["custom"].ok = chain["cboe"].ok = False
     before, calls = _usage(chain), _calls(chain)
     assert _refresh(chain["c"], chain["sid"]).status_code == 200
-    assert _call_delta(chain, calls) == (1, 1, 1)
+    assert _call_delta(chain, calls) == (1, 1, 1, 0)
     assert _delta(before, _usage(chain)) == {"owner": 0, "source": 3, "tier": 0, "fuse": 3}
 
 
@@ -638,33 +649,42 @@ def test_G_new_owner_tier_is_charged_per_attempt_not_per_refresh(chain):
     assert _metric(storage, "new_owner_tier_block_count") == 1
 
 
-def test_default_path_cboe_fail_then_yfinance_is_two_attempts(default_chain):
+def test_default_path_cboe_fail_then_yahoo_is_two_attempts(default_chain):
     ch = default_chain
     ch["cboe"].ok = False
     before, calls = _usage(ch), _calls(ch)
     assert _refresh(ch["c"], ch["sid"]).status_code == 200
-    assert _call_delta(ch, calls) == (0, 1, 1)
+    assert _call_delta(ch, calls) == (0, 1, 1, 0)
     assert _delta(before, _usage(ch)) == {"owner": 2, "source": 2, "tier": 2, "fuse": 2}
 
 
+def test_default_path_cboe_and_yahoo_fail_then_yfinance_is_three_attempts(default_chain):
+    ch = default_chain
+    ch["cboe"].ok = ch["yahoo"].ok = False
+    before, calls = _usage(ch), _calls(ch)
+    assert _refresh(ch["c"], ch["sid"]).status_code == 200
+    assert _call_delta(ch, calls) == (0, 1, 1, 1)
+    assert _delta(before, _usage(ch)) == {"owner": 3, "source": 3, "tier": 3, "fuse": 3}
+
+
 def test_yfinance_not_installed_is_not_an_attempt_and_charges_nothing(default_chain, monkeypatch):
-    """production 沒裝 yfinance：Cboe 失敗後不會有第二個上游請求，也就
-    不該再扣一次額度／fuse。"""
+    """production 沒裝 yfinance：Cboe、Yahoo 都失敗後不會有第三個上游請求，
+    也就不該再扣一次額度／fuse。"""
     from option_chaser.data import yf
 
     ch = default_chain
     monkeypatch.setattr(yf, "available", lambda: False)
-    ch["cboe"].ok = False
+    ch["cboe"].ok = ch["yahoo"].ok = False
     before, calls = _usage(ch), _calls(ch)
     r = _refresh(ch["c"], ch["sid"])
     assert r.status_code != 200
-    assert _call_delta(ch, calls) == (0, 1, 0)
-    assert _delta(before, _usage(ch)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
+    assert _call_delta(ch, calls) == (0, 1, 1, 0)
+    assert _delta(before, _usage(ch)) == {"owner": 2, "source": 2, "tier": 2, "fuse": 2}
 
 
-def test_cboe_backoff_window_charges_only_the_yfinance_attempt(default_chain):
+def test_cboe_backoff_window_charges_only_the_yahoo_attempt(default_chain):
     """Cboe 在封鎖窗內＝這一步零上游請求（backoff 短路），不扣；接著的
-    yfinance 是唯一真的送出的 attempt。"""
+    Yahoo 直連是唯一真的送出的 attempt。"""
     ch = default_chain
     until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
     ch["storage"].save_chain_backoff(ChainBackoffEntry(
@@ -672,13 +692,13 @@ def test_cboe_backoff_window_charges_only_the_yfinance_attempt(default_chain):
         consecutive_failures=1, observed_at=until, last_success_at=None))
     before, calls = _usage(ch), _calls(ch)
     assert _refresh(ch["c"], ch["sid"]).status_code == 200
-    assert _call_delta(ch, calls) == (0, 0, 1)
+    assert _call_delta(ch, calls) == (0, 0, 1, 0)
     assert _delta(before, _usage(ch)) == {"owner": 1, "source": 1, "tier": 1, "fuse": 1}
 
 
 def test_a_refused_cboe_attempt_leaves_cboe_backoff_untouched(default_chain):
     """我們自己擋下的 attempt 不是 Cboe 在限流：不得寫入 provider-global
-    backoff（否則一個人撞額度就會讓全站暫停 Cboe），也不退回 yfinance。"""
+    backoff（否則一個人撞額度就會讓全站暫停 Cboe），也不退回 Yahoo／yfinance。"""
     ch = default_chain
     storage, clock = ch["storage"], ch["clock"]
     key = ac.source_key(IP_A, SECRET, clock())
@@ -688,5 +708,5 @@ def test_a_refused_cboe_attempt_leaves_cboe_backoff_untouched(default_chain):
     calls = _calls(ch)
     r = _refresh(ch["c"], ch["sid"])
     assert r.status_code == 429 and _stage(r) == "usage_limited"
-    assert _call_delta(ch, calls) == (0, 0, 0)
+    assert _call_delta(ch, calls) == (0, 0, 0, 0)
     assert storage.get_chain_backoff("cboe") == backoff_before

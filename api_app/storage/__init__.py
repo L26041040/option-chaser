@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 from ..diagnostics import DiagnosticEvent
 
@@ -268,6 +268,67 @@ class DividendCacheEntry:
     last_success_at: str | None = None
     market_day: str | None = None
     attempted_day: str | None = None
+
+
+@dataclass(frozen=True)
+class ConsensusSnapshotRecord:
+    """分析師共識快取的一筆（OS-03／#392）：某 symbol 在某美東交易日
+    `as_of` 由資料來源 `source` 算出的 Consensus Snapshot。**全站共用、
+    不含 owner**——同一檔股票的共識不因人而異。
+
+    每個 (symbol, as_of) 一筆；同一天重算覆蓋，跨天累積成 point-in-time
+    稽核紀錄（保存年限待 #385/#386，本輪不修剪）。`snapshot` 是
+    `api_app.consensus_cache.snapshot_to_dict()` 的輸出（Decimal 存成
+    字串，不失精度）。`is_fixture` 為真代表這筆來自測試用固定資料，
+    畫面必須標示「測試資料，非真實市場資料」。"""
+    symbol: str
+    as_of: str               # YYYY-MM-DD（美東交易日）
+    source: str
+    is_fixture: bool
+    snapshot: dict
+    computed_at: str
+
+
+@dataclass(frozen=True)
+class ConsensusDetailRecord:
+    """個股共識明細（LIVE-T2／#399）：某 symbol 最新一次成功更新時的有效集合
+    （券商、原始／分割換算後目標價、發布日）與每月歷史序列（每個取樣點的人數、
+    平均、標準差、D、是否合格與原因）。**全站共用、不含 owner**。
+
+    每個 symbol 只留最新一筆（同一次更新與 `ConsensusSnapshotRecord` 一起寫，
+    `as_of`／`source` 相同）；不跨天累積——每日的 point-in-time 稽核紀錄是
+    consensus_snapshots（含合格歷史點），明細大小因此以母體大小為上限。
+    `detail` 是 `api_app.consensus_cache.detail_to_dict()` 的輸出（Decimal
+    存字串）。"""
+    symbol: str
+    as_of: str               # YYYY-MM-DD（美東交易日）
+    source: str
+    detail: dict
+    computed_at: str
+
+
+@dataclass(frozen=True)
+class ConsensusRefreshState:
+    """每個 symbol 最後一次向分析師資料來源嘗試的狀態（OS-03／#392）。
+
+    `attempted_day` 是「同一交易日最多抓一次上游」的依據，也是每日 cron
+    的進度游標（最久沒嘗試的先跑，跑不完的下次接續）。`error` 非 `None`
+    代表那次失敗——上一份成功的 Snapshot 原樣保留。
+
+    LIVE-T3（#398）新增三欄（只新增；舊列讀回預設值）：
+    - `attempts`：`attempted_day` 這一天已經打了幾次上游（含成功那次）——
+      失敗的重試上限依它判斷，換日歸零重算。
+    - `next_retry_at`：失敗後最早可以再試的時間（ISO UTC；冷卻、429
+      `Retry-After`、重試用完時＝下一個美東日零時）。成功時為 `None`。
+    - `last_success_at`：最後一次成功的時間（ISO UTC），失敗時沿用。"""
+    symbol: str
+    source: str
+    attempted_day: str       # YYYY-MM-DD（美東）
+    attempted_at: str        # ISO UTC
+    error: str | None = None
+    attempts: int = 1
+    next_retry_at: str | None = None
+    last_success_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -568,6 +629,10 @@ class DataSourceSettings:
     historical_iv: UsageSetting
     updated_at: str
     owner_id: str | None = None
+    # OS-02（#391）：機會搜尋的選填設定（已驗證、正規化的完整 dict，
+    # 契約見 `api_app/opportunity_settings.py`）。`None`＝從沒存過，讀取端
+    # 一律回預設。跟兩列資料源存在同一份 JSON 裡，不需要 DDL。
+    opportunity_search: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -929,6 +994,52 @@ class Storage(Protocol):
     def save_dividend_cache(self, entry: DividendCacheEntry) -> None:
         """覆蓋該 symbol 既有那一筆——per-symbol 單一狀態，不是歷史序列。"""
 
+    # ---------- 分析師共識快取（OS-03／#392，全站共用、不含 owner） ----------
+
+    def save_consensus_snapshot(self, record: ConsensusSnapshotRecord) -> None:
+        """upsert 一筆 (symbol, as_of)：同一天覆蓋，跨天累積。"""
+
+    def latest_consensus_snapshots(self, symbols: Sequence[str], *,
+                                   source: str) -> dict[str, ConsensusSnapshotRecord]:
+        """每個 symbol 由 `source` 產生的最新一筆（as_of 最大）。沒有任何
+        紀錄的 symbol 不出現在回傳的 dict 裡。一次查完，不逐檔連線。"""
+
+    def save_consensus_detail(self, record: ConsensusDetailRecord) -> None:
+        """覆蓋該 symbol 的明細——per-symbol 只留最新一筆（LIVE-T2／#399）。"""
+
+    def get_consensus_detail(self, symbol: str) -> ConsensusDetailRecord | None:
+        """該 symbol 最新一筆明細；從沒成功更新過回 `None`。"""
+
+    def save_consensus_refresh_state(self, state: ConsensusRefreshState) -> None:
+        """覆蓋該 symbol 的嘗試狀態——per-symbol 單一狀態。"""
+
+    def consensus_refresh_states(self) -> dict[str, ConsensusRefreshState]:
+        """全部 symbol 的最後一次嘗試狀態（數量 ≈ 母體大小，數百筆以內）。"""
+
+    def get_consensus_refresh_state(self, symbol: str) -> ConsensusRefreshState | None:
+        """單一 symbol 的嘗試狀態；從沒嘗試過回 `None`。取得處理中標記後
+        重新讀它，才知道別人是不是剛剛已經抓完（LIVE-T3／#398）。"""
+
+    def acquire_consensus_refresh_lease(self, symbol: str, holder: str, *,
+                                        now: float, ttl_seconds: float) -> bool:
+        """「處理中」標記（LIVE-T3／#398）：同一個 symbol 同一時間只能有一次
+        上游呼叫。沒有標記、或既有標記已逾時（`expires_at <= now`，函式中斷
+        沒釋放）時原子地取得並回 `True`（到期時間 `now + ttl_seconds`，
+        epoch 秒）；別人的標記還沒逾時回 `False`。"""
+
+    def release_consensus_refresh_lease(self, symbol: str, holder: str) -> None:
+        """只釋放 `holder` 自己的標記；已被別人（逾時後）取得的不動。"""
+
+    def consensus_refresh_leases(self, *, now: float) -> dict[str, float]:
+        """還沒逾時的處理中標記：symbol → 到期時間（epoch 秒）。"""
+
+    def opportunity_custom_symbols(self) -> list[str]:
+        """**目前權限為 SU／SA** 的 owner 的 `opportunity_search.custom_symbols`
+        聯集（排序、去重）——每日共識更新的母體之一。「目前權限」＝owner
+        層級是特權帳號（`owners.role`），或名下任一顆裝置憑證是 SU／SA
+        （`browser_identities.role`）；Normal、沒有 owner 紀錄、已被降回
+        Normal 的 owner 的清單一律不併入。只回 ticker，不回任何 owner 資訊。"""
+
     # ---------- Treasury 曲線列快取（PERF-03／#179，per-year） ----------
 
     def get_treasury_year_cache(self, year: int) -> TreasuryYearCacheEntry | None:
@@ -965,6 +1076,17 @@ class Storage(Protocol):
         """寫進新表 `owner_settings`，覆蓋既有那一筆——單一狀態，不是
         歷史序列。`settings.owner_id` 必須非 `None`（`require_owner()`
         守門）。"""
+
+    def update_settings(
+            self, owner: str,
+            mutate: Callable[[DataSourceSettings | None], DataSourceSettings],
+    ) -> DataSourceSettings:
+        """原子的「讀 → 改 → 寫」：鎖住這個 owner 的設定（Postgres：同一個
+        交易裡的 advisory lock＋列鎖；記憶體：互斥鎖），把目前的值（從沒
+        存過是 `None`）交給 `mutate`，存下它回傳的新值並回傳。同一 owner
+        的並發更新因此依序執行，各自的部分更新都不會被另一個蓋掉（lost
+        update）。`mutate` 拋例外 → 什麼都不寫、例外原樣往外拋。回傳值的
+        `owner_id` 必須就是 `owner`。"""
 
     def get_credential(self, provider: str, *, owner: str) -> ProviderCredential | None: ...
 
@@ -1260,7 +1382,9 @@ class Storage(Protocol):
         **明確不觸碰**的 shared market facts 表（system-wide，與任何
         單一 owner 無關）：`rate_cache`／`treasury_year_cache`／
         `dividend_cache`／`chain_backoff`／`operational_metrics`／
-        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`
+        `contract_iv_history`／`iv_observations`／`iv_backfill_runs`／
+        `consensus_snapshots`／`consensus_refresh_state`／
+        `consensus_refresh_leases`／`consensus_details`
         ——這些表結構上沒有 `owner_id` 欄位。
 
         **單一交易內完成**（postgres 無 FK cascade，全部手動
@@ -1305,7 +1429,7 @@ class Storage(Protocol):
         settings／credentials／verifications；`role_sessions`（執行 reset 的
         Super Admin 不會被自己踢出去）；`superuser_audit_log`；全部 shared
         market cache（rate／dividend／treasury／IV／contract history／
-        chain_backoff）。
+        chain_backoff／analyst consensus）。
 
         回傳 `{名稱: 受影響列數}`（`owner_activity` 是被歸零的 protected
         owner 數）。冪等：已經是乾淨狀態時全部為 0。"""
@@ -1446,6 +1570,11 @@ class Storage(Protocol):
         並發下是精確的，不是軟性上限：多個 serverless instance 同時扣
         同一格時，後到的會等先到的交易結束再讀到新的計數（Postgres 用
         列鎖、依主鍵順序上鎖避免死結；記憶體後端用 lock）。"""
+
+    def rate_limit_count(self, bucket: RateLimitBucket) -> int:
+        """這個計數格目前的次數（不扣、不建立；沒有這一列＝0）。LIVE-T3
+        （#398）的每日上游呼叫上限沿用 `rate_limit_consume()` 這套計數，
+        狀態 API 用本方法讀今天已用了幾次。"""
 
     def purge_rate_limits(self, *, before_epoch: int) -> int:
         """刪掉視窗在 `before_epoch` 之前就已經結束的計數列，回傳刪了
@@ -1643,7 +1772,8 @@ class OwnerSettingsBundle:
 
 def _settings_equivalent(a: DataSourceSettings, b: DataSourceSettings) -> bool:
     # updated_at 只是寫入時間，不是設定內容。
-    return a.market_data == b.market_data and a.historical_iv == b.historical_iv
+    return (a.market_data == b.market_data and a.historical_iv == b.historical_iv
+            and a.opportunity_search == b.opportunity_search)
 
 
 def _credential_equivalent(a: ProviderCredential, b: ProviderCredential) -> bool:

@@ -29,11 +29,12 @@ import {
 } from "./api";
 import DeleteMyData from "./DeleteMyData";
 import FeedbackForm from "./FeedbackForm";
+import OpportunitySearchSettings, { OPPORTUNITY_SETTINGS_ID } from "./OpportunitySearchSettings";
 import Diagnostics from "./Diagnostics";
 import DisclaimerSection from "./DisclaimerSection";
 import { getAuthStatusCached, getSettingsCached, setSettingsCache } from "./fetchCache";
 import RoleLogin from "./RoleLogin";
-import { adminHash } from "./route";
+import { adminHash, settingsSectionFromHash } from "./route";
 import { roleAtLeast, type Role } from "./superuser";
 import { useIsDesktop } from "./useIsDesktop";
 
@@ -47,18 +48,19 @@ import { useIsDesktop } from "./useIsDesktop";
  * 設定，Super Admin 另外多一個進入管理中心的入口。
  */
 type SettingsSection =
-  | "general" | "datasource" | "diagnostics" | "delete" | "disclaimer";
+  | "general" | "datasource" | "opportunity" | "diagnostics" | "delete" | "disclaimer";
 
 const SECTION_LABELS: Record<SettingsSection, string> = {
   general: "一般",
   datasource: "資料來源",
+  opportunity: "機會搜尋",
   diagnostics: "診斷",
   delete: "刪除我的資料",
   disclaimer: "免責聲明",
 };
 
 const SECTION_ORDER: SettingsSection[] =
-  ["general", "datasource", "diagnostics", "delete", "disclaimer"];
+  ["general", "datasource", "opportunity", "diagnostics", "delete", "disclaimer"];
 
 /** 兩列的識別鍵——與後端 `api_app/providers.py` 的 `USAGES` 同名。 */
 type UsageKey = "market_data" | "historical_iv";
@@ -115,7 +117,26 @@ export default function Settings() {
   const isDesktop = useIsDesktop();
   // OG-11（#322）：桌面版 subnav 目前選中哪一塊——手機版不需要這個
   // state（單欄堆疊全部一次顯示），只在 `isDesktop` 分支使用。
-  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
+  // OS-05（#394）：從機會搜尋頁「調整門檻」（`#/settings/opportunity`）
+  // 進來時直接停在那一塊——桌面選中分頁，手機（單欄堆疊）載入後捲過去。
+  const [linkedSection] = useState(() => settingsSectionFromHash(window.location.hash));
+  const [activeSection, setActiveSection] =
+    useState<SettingsSection>(linkedSection ?? "general");
+  // 已經在設定頁時網址才改成帶區塊的 hash（例如另一個分頁、書籤或手動
+  // 改網址）：元件不會重新掛載，所以要聽 hashchange 才會切到那一塊。
+  // 沒帶區塊（`#/settings`）不動目前的分頁。
+  useEffect(() => {
+    function onHashChange() {
+      const section = settingsSectionFromHash(window.location.hash);
+      if (section === null) return;
+      setActiveSection(section);
+      if (!isDesktop) {
+        document.getElementById(OPPORTUNITY_SETTINGS_ID)?.scrollIntoView({ block: "start" });
+      }
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [isDesktop]);
 
   // 角色查詢跟 `RoleLogin` 共用同一份快取（只有第一個真的發請求）。
   // 查不到時當作 Normal——跟 `RoleLogin` 查詢失敗「維持現況」一致，
@@ -131,6 +152,12 @@ export default function Settings() {
       release();
     };
   }, []);
+
+  const opportunityReady = view !== null && roleAtLeast(roleState ?? "normal", "superuser");
+  useEffect(() => {
+    if (isDesktop || linkedSection !== "opportunity" || !opportunityReady) return;
+    document.getElementById(OPPORTUNITY_SETTINGS_ID)?.scrollIntoView({ block: "start" });
+  }, [isDesktop, linkedSection, opportunityReady]);
 
   // Normal User 的設定頁只有「刪除我的資料」「免責聲明」與底部登入——
   // Data / API、診斷、管理中心入口都只給登入後的角色，Normal 連掛載都
@@ -253,6 +280,21 @@ export default function Settings() {
     </>
   );
 
+  // OS-02（#391）：機會搜尋區塊——同樣只有 Super User／Super Admin 走得到。
+  // 它自己管草稿與存檔；存好後回來的 view 更新這裡與共用快取，但**不**
+  // 重設 Data / API 的草稿（那邊還沒按儲存的修改不該被別塊的存檔蓋掉）。
+  const opportunityPanel = !view ? (
+    <p className="caption">載入中……</p>
+  ) : (
+    <OpportunitySearchSettings
+      view={view}
+      onSaved={(next) => {
+        setView(next);
+        setSettingsCache(next);
+      }}
+    />
+  );
+
   const head = (
     <div className="settings-head">
       <a className="nav-back" href="#/">
@@ -326,6 +368,7 @@ export default function Settings() {
               <RoleLogin role={role} onChange={setRole} />
             )}
             {activeSection === "datasource" && datasourcePanel}
+            {activeSection === "opportunity" && opportunityPanel}
             {activeSection === "diagnostics" && <Diagnostics />}
             {activeSection === "delete" && <DeleteMyData />}
             {activeSection === "disclaimer" && <DisclaimerSection />}
@@ -338,6 +381,8 @@ export default function Settings() {
           {adminEntry}
 
           {datasourcePanel}
+
+          {opportunityPanel}
 
           <Diagnostics />
 

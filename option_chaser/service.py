@@ -1329,8 +1329,9 @@ def fetch_chain(symbol: str) -> ChainSnapshot:
     """抓取選擇權鏈，**不落盤**。
 
     FB3-01（#44）：Cboe 延遲報價為主源（盤外凍結收盤 bid/ask 不歸零、
-    單一 GET 回全鏈），失敗自動退回 yfinance；快照 `source` 欄位如實
-    記錄實際用了哪個源。lazy import：離線路徑永不碰網路模組。
+    單一 GET 回全鏈），失敗依序退回 Yahoo 直連（`data/yahoo_options.py`，
+    OPTION-CHASER-PRODUCTION-DELIVERY-001）與 yfinance；快照 `source` 欄位
+    如實記錄實際用了哪個源。lazy import：離線路徑永不碰網路模組。
 
     V1（#48）：自 `fetch_and_save` 抽出——serverless 檔案系統唯讀，
     API 層需要「只抓不存」的入口，降級鏈本身則不重複實作。
@@ -1344,8 +1345,14 @@ def fetch_chain(symbol: str) -> ChainSnapshot:
     try:
         return cboe.fetch_chain(symbol)
     except FetchError:
-        from .data import yf
+        pass
+    # OPTION-CHASER-PRODUCTION-DELIVERY-001：Cboe 被擋時先試 Yahoo 直連
+    # （stdlib，serverless 也有），最後才是選用的 yfinance。
+    from .data import yahoo_options, yf
 
+    try:
+        return yahoo_options.fetch_chain(symbol)
+    except FetchError:
         return yf.fetch_chain(symbol)
 
 
