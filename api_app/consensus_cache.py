@@ -18,14 +18,15 @@
    - 成功 → 以 `compute_snapshot()` 算出當天的 Snapshot，寫一筆
      (symbol, as_of)；失敗 → 只記錄嘗試（`ConsensusRefreshState.error`），
      **上一份成功的 Snapshot 原樣保留**，清單照實標出它的 as_of；
-   - **進度游標**＝每個 symbol 的 `attempted_day`：每次呼叫依「從沒嘗試過
-     → 最久沒嘗試」的順序處理，受時間預算（與 SU 端點的每批檔數）約束；
+   - **進度游標**＝每個 symbol 的嘗試紀錄：每次呼叫依**公平輪替**
+     （`rotation_key()`：從沒嘗試過 → 最久沒嘗試 → 同日嘗試的資料最舊者，
+     V2-02／#403）處理，受時間預算（與 SU 端點的每批檔數）約束；
      跑不完的放 `remaining`，由下一次呼叫（前端自動續跑或明天的 cron）接續。
    狀態 API 用 `refresh_status()`。
 2. **清單**（`consensus_view()`，給 `GET /api/opportunity/consensus`）：只讀
    快取、不打上游；讀取時才以使用者的兩道門檻 `evaluate_gate()`——改門檻
    立即生效，不必重抓。
-3. **每日摘要統計**（`digest_counts()`）。
+3. **每日摘要統計**（`digest_counts()`）與**排程執行紀錄**（`cron_view()`）。
 
 只採用**目前設定的來源**產生的快取（`source` 名稱比對）：來源換掉之後，
 舊來源（例如測試資料）的 Snapshot 不會被當成新來源的結果顯示。
@@ -44,7 +45,7 @@ from zoneinfo import ZoneInfo
 from option_chaser import consensus
 from option_chaser.consensus import ConsensusCrossCheck, ConsensusRules, ConsensusSnapshot
 
-from . import search_universe
+from . import metrics, search_universe
 from .opportunity_settings import DEFAULT_DISPERSION_MAX, DEFAULT_PERCENTILE_MAX
 from .analyst_source import AnalystSource
 from .storage import (ConsensusDetailRecord, ConsensusRefreshState,
@@ -56,9 +57,11 @@ from .storage import (ConsensusDetailRecord, ConsensusRefreshState,
 # 改規則不必改程式（user story 40）。
 DEFAULT_RULES = ConsensusRules()
 DEFAULT_TARGET_MONTH_RULE = "fixed_12m"
-# 每日更新母體的總上限（樣本優先；數值待 #386，`create_app(
-# consensus_refresh_symbol_cap=)` 可覆寫）。
-DEFAULT_REFRESH_SYMBOL_CAP = 200
+# 每日更新範圍的總上限（V2-02／#403）：S&P 500（約 503 檔）＋約兩份滿額
+# （各 `CUSTOM_SYMBOLS_MAX`＝50 檔）的成分股以外自訂清單。超出的照實列為
+# `out_of_scope`。可用 `create_app(consensus_refresh_symbol_cap=)` 或
+# `CONSENSUS_REFRESH_SYMBOL_CAP` 覆寫。
+DEFAULT_REFRESH_SYMBOL_CAP = 600
 NOT_CONFIGURED_MESSAGE = "尚未設定分析師資料來源"
 _NOT_REFRESHED = "no_data: 尚未更新"
 # 「有資料但不足」：資料品質規則沒過（不含完全沒資料、來源失敗）。
@@ -152,9 +155,10 @@ def refresh_universe(storage: Storage, *,
     **目前權限為 SU／SA** 的 owner 的自訂清單（#392；Normal 寫不進、也不會
     被併入——`Storage.opportunity_custom_symbols()` 只回特權 owner 的清單）。
 
-    總數不超過 `cap`（預設 200；成分股約 503 檔，超出的照實列為
-    `out_of_scope`——每日約 500 檔的排程與額度是 #403 的事，這裡不擴）。
-    順序決定誰先佔名額，而且是決定性的（同一份資料每天選出同一批）：
+    總數不超過 `cap`（預設 600：整份成分股＋約兩份滿額的自訂清單，V2-02／
+    #403；超出的照實列為 `out_of_scope`）。這裡的順序**只**決定超出上限時
+    誰被截掉，而且是決定性的（同一份資料每天選出同一批）；每次續跑先抓誰
+    由公平輪替決定（`rotation_key()`），與這個順序無關：
     1. `REFRESH_PRIORITY`（原大型股樣本 50 檔，全是成分股）；
     2. 自訂清單，canonical 化後依代號排序——維持 #392 起「自訂清單一定在
        樣本之後、成分股其餘之前」的承諾，不會被 500 檔擠掉；
@@ -183,7 +187,10 @@ class RefreshPolicy:
     max_retries: int = 3                     # 失敗後同一交易日最多再試幾次
     retry_cooldown_seconds: int = 900        # 每次重試前的冷卻（15 分）
     rate_limit_cooldown_seconds: int = 1800  # 429 沒給 Retry-After 時（30 分）
-    daily_upstream_cap: int = 400            # 每日上游呼叫上限（一次＝一檔 fetch）
+    # 每日上游呼叫上限（一次＝一檔 fetch，約 2 個 HTTP 請求）。V2-02／#403：
+    # 900＝每日更新範圍上限 600 × 1.5——一整輪（最多 600 檔）之外還留給失敗
+    # 重試約 300 次；實測見 docs/spec/options-scanner/daily-rotation.md。
+    daily_upstream_cap: int = 900
     lease_seconds: int = 120                 # 處理中標記逾時（> 函式 maxDuration 60）
     call_spacing_seconds: float = 1.0        # 同一次呼叫裡兩次上游呼叫的間隔
     batch_size: int = 10                     # SU 端點每次呼叫最多處理幾檔
@@ -218,6 +225,7 @@ _POLICY_ENV = {
     "batch_size": ("CONSENSUS_REFRESH_BATCH_SIZE", int, 1),
 }
 DEFAULT_POLICY = RefreshPolicy()
+CRON_RUN_METRIC = "consensus_cron_run_count"
 NOT_RETRYABLE_STAGE = "consensus_not_retryable"
 DAILY_CAP_STAGE = "consensus_daily_cap"
 DAILY_CAP_MESSAGE = "今日分析師資料的上游呼叫已達每日上限，下一個交易日自動恢復"
@@ -335,6 +343,26 @@ def _classify(st: ConsensusRefreshState | None, today: date, now: float,
     return "retry_ready"
 
 
+def rotation_key(symbol: str, st: ConsensusRefreshState | None) -> tuple:
+    """公平輪替的順序（V2-02／#403）：cron 與 SU「繼續更新」每次呼叫都依它挑
+    下一檔，不再是固定的清單順序。
+
+    1. 從沒嘗試過的先（`attempted_day` 空字串最小）；
+    2. 最久沒嘗試的先（以嘗試的美東日比）；
+    3. 同一天嘗試過的，資料最舊的先（從沒成功過＝最舊）；
+    4. 再依嘗試時刻、代號——決定性的。
+
+    為什麼每一檔都會在 N＝ceil(範圍／每日處理量) 個交易日內輪到：某檔 X 上次
+    在第 d 天被嘗試後，排在它前面的只可能是「嘗試日 ≤ d」的那些（至多 範圍−1
+    檔）；X 沒被輪到的每一個交易日都有「每日處理量」檔排在它前面的被嘗試、
+    嘗試日變成今天、從此排到 X 後面。所以 X 最多被跳過 floor((範圍−1)／處理量)
+    個交易日。同一交易日的失敗重試（嘗試日＝今天）一定排在所有還沒輪到的
+    後面，重試不會吃掉首次嘗試的名額。"""
+    if st is None:
+        return ("", "", "", symbol)
+    return (st.attempted_day, (st.last_success_at or "")[:10], st.attempted_at, symbol)
+
+
 def _skip(symbol: str, state: str, st: ConsensusRefreshState | None) -> dict:
     return {"symbol": symbol, "state": state,
             "next_retry_at": st.next_retry_at if st is not None and st.error else None,
@@ -427,7 +455,7 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
             pending.append(symbol)
         else:
             skipped.append(_skip(symbol, state, own[symbol]))
-    pending.sort(key=lambda s: (own[s].attempted_day if own[s] else "", s))
+    pending.sort(key=lambda s: rotation_key(s, own[s]))
     done_today = sum(1 for s in wanted
                      if own[s] and _same_trading_day(own[s].attempted_day, today))
 
@@ -506,7 +534,7 @@ def refresh_status(storage: Storage, source: AnalystSource | None,
     母體）裡超出更新母體的另外列在 `out_of_scope`／`out_of_scope_symbols`。"""
     outside = out_of_scope(search_symbols, symbols) if source is not None else []
     base = {"today": today.isoformat(), "now": _iso(now), "policy": policy.view(),
-            "daily_cap": policy.daily_upstream_cap,
+            "daily_cap": policy.daily_upstream_cap, "cron": cron_view(storage, today),
             "out_of_scope": len(outside), "out_of_scope_symbols": outside}
     if source is None:
         return {**base, "source": {"configured": False, "name": None,
@@ -544,6 +572,22 @@ def refresh_status(storage: Storage, source: AnalystSource | None,
                 _upstream_bucket(source, today, policy)),
             "rate_limited_until": (_iso(paused) if (paused := rate_limited_until(
                 storage, source, now=now)) is not None else None)}
+
+
+def cron_view(storage: Storage, today: date) -> dict:
+    """排程實際執行的紀錄（V2-02／#403）：今天授權成功的執行次數、處理的檔數，
+    以及保留窗內（`metrics.RETENTION_DAYS`）最近一次執行的美東日。
+
+    只有 `GET /api/cron/consensus-refresh` 授權成功才會留紀錄（被 401 的呼叫
+    什麼都不寫），所以 `last_run_day: None` 就是「排程尚未執行」——正式站沒設
+    `CRON_SECRET` 時就是這樣，畫面與摘要照實顯示，不假裝排程正常。"""
+    entries = [e for e in storage.metric_summary()
+               if e.metric == CRON_RUN_METRIC and e.count > 0]
+    day = today.isoformat()
+    return {"runs_today": sum(e.count for e in entries if e.bucket == day),
+            "symbols_today": int(sum(e.total for e in entries if e.bucket == day)),
+            "last_run_day": max((e.bucket for e in entries), default=None),
+            "lookback_days": metrics.RETENTION_DAYS}
 
 
 def _progress(rows: Sequence[dict]) -> dict:
@@ -785,11 +829,21 @@ def detail_view(storage: Storage, source: AnalystSource | None, symbol: str,
 # ---------- 每日摘要 ----------
 
 def digest_counts(storage: Storage, source: AnalystSource | None,
-                  today: date) -> dict | None:
+                  today: date, universe: Sequence[str] = ()) -> dict | None:
     """今天（同一來源）的更新統計；來源未設定回 `None`。入選數以預設門檻
-    （#389 §6：20%／10%）計算——門檻是每位使用者自己的設定，摘要只看全站。"""
+    （#389 §6：20%／10%）計算——門檻是每位使用者自己的設定，摘要只看全站。
+
+    V2-02／#403：`universe`＝每日更新範圍（`refresh_universe()`）；
+    `not_reached`＝其中這個交易日還沒被嘗試過的檔數（公平輪替還沒輪到）；
+    `cron`＝排程實際執行的紀錄（`cron_view()`）。"""
     if source is None:
         return None
+    states = storage.consensus_refresh_states()
+    wanted = list(dict.fromkeys(universe))
+    not_reached = sum(
+        1 for s in wanted
+        if (st := _own(states.get(s), source)) is None
+        or not _same_trading_day(st.attempted_day, today))
     p_max = _pct_to_ratio(DEFAULT_PERCENTILE_MAX)
     d_max = _pct_to_ratio(DEFAULT_DISPERSION_MAX)
     day = today.isoformat()
@@ -803,4 +857,6 @@ def digest_counts(storage: Storage, source: AnalystSource | None,
             "failed": len(attempted) - len(ok_symbols),
             "insufficient": sum(1 for s in todays if s.status != "ok"),
             "selected": sum(1 for s in todays
-                            if consensus.evaluate_gate(s, p_max, d_max).selected)}
+                            if consensus.evaluate_gate(s, p_max, d_max).selected),
+            "universe": len(wanted), "not_reached": not_reached,
+            "cron": cron_view(storage, today)}

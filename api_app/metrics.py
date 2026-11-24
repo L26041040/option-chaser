@@ -73,6 +73,11 @@ METRIC_CATALOGUE = (
     "identity_unknown_token",            # 帶著作廢過的 token 來（source＝原因）
     "identity_unknown_write_refused",    # 用已作廢憑證嘗試寫入，被 409 拒絕（換發新憑證）
     "identity_renew_cookie",             # 同顆 cookie 門檻式續簽
+    # V2-02（#403）：分析師資料排程（`GET /api/cron/consensus-refresh`）每次
+    # **授權成功**的執行記一筆（`count`＝1、`amount`＝這次處理的檔數）——
+    # 「排程到底有沒有在跑」只看這個桶，不從 vercel.json 有設定去推論（比照
+    # `abandoned_owner_cleanup_count` 的「桶不存在＝排程沒跑到」）。
+    "consensus_cron_run_count",
 )
 
 # `table_size` 是 query-time gauge，不經過 `record()`／`operational_

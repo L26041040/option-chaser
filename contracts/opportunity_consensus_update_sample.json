@@ -71,7 +71,7 @@
   "message": null,
   "rate_limited_until": null,
   "upstream_calls_today": 25,
-  "daily_cap": 400,
+  "daily_cap": 900,
   "progress": {
     "total": 57,
     "done": 24,

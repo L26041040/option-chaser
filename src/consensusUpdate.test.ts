@@ -9,6 +9,7 @@ import type {
 } from "./api";
 import {
   builtCount,
+  cronText,
   dataPhase,
   formatWait,
   isFailed,
@@ -97,6 +98,53 @@ describe("nextAutoUpdate（排程只在平日跑）", () => {
     expect(nextAutoUpdate(undefined)).toBe("明天自動更新");
     expect(nextAutoUpdate("garbage")).toBe("明天自動更新");
   });
+
+  it("排程有執行紀錄：照樣說明天／下週一自動更新", () => {
+    const ran = { runs_today: 0, symbols_today: 0, last_run_day: "2026-09-25",
+                  lookback_days: 30 };
+    expect(nextAutoUpdate("2026-09-28", ran)).toBe("明天自動更新");
+    expect(nextAutoUpdate("2026-09-25", ran)).toBe("下週一自動更新");
+  });
+
+  it("排程尚未執行（沒有任何授權成功的紀錄）：不說會自動更新", () => {
+    const never = { runs_today: 0, symbols_today: 0, last_run_day: null, lookback_days: 30 };
+    expect(nextAutoUpdate("2026-09-28", never))
+      .toBe("排程尚未執行，不會自動更新，明天請手動「繼續更新」");
+    expect(nextAutoUpdate("2026-09-25", never))
+      .toBe("排程尚未執行，不會自動更新，下週一請手動「繼續更新」");
+  });
+});
+
+describe("cronText（排程實際執行情形，只依授權成功的紀錄）", () => {
+  it("今天跑過：次數與檔數", () => {
+    expect(cronText({ runs_today: 3, symbols_today: 84, last_run_day: "2026-09-28",
+                      lookback_days: 30 }))
+      .toBe("今天已執行 3 次（處理 84 檔）");
+  });
+
+  it("今天還沒跑：說最近一次是哪天", () => {
+    expect(cronText({ runs_today: 0, symbols_today: 0, last_run_day: "2026-09-25",
+                      lookback_days: 30 }))
+      .toBe("今天尚未執行；最近一次在 2026-09-25");
+  });
+
+  it("從沒跑過：排程尚未執行", () => {
+    expect(cronText({ runs_today: 0, symbols_today: 0, last_run_day: null,
+                      lookback_days: 30 }))
+      .toBe("排程尚未執行（近 30 天沒有紀錄）");
+  });
+
+  it("後端沒回報（舊版）：不猜", () => {
+    expect(cronText(undefined)).toBeNull();
+  });
+});
+
+describe("retryGate 在排程尚未執行時", () => {
+  it("重試用完：不說明天自動更新", () => {
+    const never = { runs_today: 0, symbols_today: 0, last_run_day: null, lookback_days: 30 };
+    expect(retryGate(sym({ state: "exhausted" }), NOW, { today: "2026-09-28", cron: never })
+      .reason).toBe("今天的重試次數已用完，排程尚未執行，不會自動更新，明天請手動「繼續更新」");
+  });
 });
 
 const noFailures: ConsensusRefreshStatusResponse = {
@@ -122,13 +170,13 @@ describe("dataPhase：就緒／建立中／失敗／已達上限", () => {
   });
 
   it("今日上游呼叫已達上限、還有沒做完的：已達上限（優先於建立中）", () => {
-    const capped = { ...STATUS, upstream_calls_today: 400 };
+    const capped = { ...STATUS, upstream_calls_today: 400, daily_cap: 400 };
     expect(dataPhase(withUniverse({ not_built: 2 }), capped))
       .toEqual({ kind: "capped", calls: 400, cap: 400 });
   });
 
   it("已達上限但今天都做完了：就緒（上限不影響已有資料）", () => {
-    expect(dataPhase(withUniverse({ not_built: 0 }), { ...noFailures, upstream_calls_today: 400 }))
+    expect(dataPhase(withUniverse({ not_built: 0 }), { ...noFailures, upstream_calls_today: 400, daily_cap: 400 }))
       .toEqual({ kind: "ready" });
   });
 

@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   getConsensusRefreshStatus,
   updateConsensus,
+  type ConsensusCronStatus,
   type ConsensusRefreshProgress,
   type ConsensusRefreshStatusResponse,
   type ConsensusRefreshSymbol,
@@ -30,6 +31,7 @@ import {
 import {
   builtCount,
   capReached,
+  cronText,
   dataPhase,
   formatWait,
   inScopeTotal,
@@ -123,7 +125,8 @@ export default function AnalystUpdatePanel({
   const busy = run.state === "running" || retrying !== null;
   const phase = dataPhase(consensus, data, now);
   const retryCtx: RetryContext = { capReached: capReached(data), today: data?.today,
-                                   rateLimitedUntil: pausedUntil };
+                                   rateLimitedUntil: pausedUntil, cron: data?.cron };
+  const schedule = cronText(data?.cron);
   const built = builtCount(consensus);
   const total = inScopeTotal(consensus);
   const outOfScope = outOfScopeText(consensus);
@@ -197,6 +200,7 @@ export default function AnalystUpdatePanel({
             {data.upstream_calls_today}／{data.daily_cap} 次
           </StatusFact>
         )}
+        {schedule && <StatusFact label="排程">{schedule}</StatusFact>}
       </ul>
       {status.state === "loading" && <p className="caption">載入中……</p>}
       {status.state === "error" && (
@@ -205,7 +209,8 @@ export default function AnalystUpdatePanel({
         </div>
       )}
       <p className={`notice opp-phase${phase.kind === "ready" ? "" : " warn"}`} role="status">
-        {phaseText(phase, { built, total, selected, today: data?.today, now })}
+        {phaseText(phase, { built, total, selected, today: data?.today, now,
+                            cron: data?.cron })}
       </p>
       {outOfScope && <p className="caption">{outOfScope}</p>}
       <div className="opp-actions">
@@ -255,9 +260,9 @@ function StatusFact({ label, children }: { label: string; children: ReactNode })
 /** 每個狀態一句話：現在怎樣、下一步做什麼。 */
 function phaseText(
   phase: DataPhase,
-  { built, total, selected, today, now }:
+  { built, total, selected, today, now, cron }:
     { built: number; total: number; selected: number; today: string | undefined;
-      now: number },
+      now: number; cron: ConsensusCronStatus | undefined },
 ): string {
   switch (phase.kind) {
     case "ready":
@@ -273,7 +278,7 @@ function phaseText(
     case "rate_limited":
       return `資料來源限流（429），所有更新暫停，還要約 ${formatWait(secondsUntil(phase.until, now))}才會再更新或重試。已建立的資料照常可以搜尋。`;
     case "capped":
-      return `今日上游呼叫已達每日上限（${phase.calls}／${phase.cap} 次），今天不能再更新或重試，${nextAutoUpdate(today)}。已建立的資料照常可以搜尋。`;
+      return `今日上游呼叫已達每日上限（${phase.calls}／${phase.cap} 次），今天不能再更新或重試，${nextAutoUpdate(today, cron)}。已建立的資料照常可以搜尋。`;
   }
 }
 

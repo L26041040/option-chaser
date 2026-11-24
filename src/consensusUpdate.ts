@@ -7,6 +7,7 @@
  * 仍會再判斷一次（冷卻、重試次數、每日上限、別人正在抓），不靠前端擋。
  */
 import type {
+  ConsensusCronStatus,
   ConsensusItem,
   ConsensusRefreshProgress,
   ConsensusRefreshStatusResponse,
@@ -44,16 +45,40 @@ export function formatWait(seconds: number): string {
   return `${m} 分 ${String(s).padStart(2, "0")} 秒`;
 }
 
+/** 美東「明天」是不是週末（排程只在平日跑）；讀不懂的日期當平日。 */
+function nextDayWord(today: string | undefined): "明天" | "下週一" {
+  const at = today ? Date.parse(`${today}T00:00:00Z`) : NaN;
+  if (Number.isNaN(at)) return "明天";
+  const tomorrow = new Date(at + 86_400_000).getUTCDay();
+  return tomorrow === 0 || tomorrow === 6 ? "下週一" : "明天";
+}
+
 /**
  * 下一次自動更新是什麼時候（LIVE-T5／#401）。每日排程只在平日跑
  * （`vercel.json` 的 cron `1-5`），所以美東「明天」是週六／週日時說下週一。
  * `today` 是後端狀態 API 的美東日期；沒有或讀不懂時照樣說明天。
+ *
+ * V2-02（#403）：`cron` 是排程實際執行的紀錄。沒有任何一次授權成功的執行
+ * （`last_run_day: null`，例如正式站還沒設 `CRON_SECRET`）時不說「會自動
+ * 更新」——照實說排程尚未執行、要手動繼續。
  */
-export function nextAutoUpdate(today: string | undefined): string {
-  const at = today ? Date.parse(`${today}T00:00:00Z`) : NaN;
-  if (Number.isNaN(at)) return "明天自動更新";
-  const tomorrow = new Date(at + 86_400_000).getUTCDay();
-  return tomorrow === 0 || tomorrow === 6 ? "下週一自動更新" : "明天自動更新";
+export function nextAutoUpdate(today: string | undefined,
+                               cron?: ConsensusCronStatus): string {
+  const day = nextDayWord(today);
+  if (cron && cron.last_run_day === null) {
+    return `排程尚未執行，不會自動更新，${day}請手動「繼續更新」`;
+  }
+  return `${day}自動更新`;
+}
+
+/** 排程實際執行情形的一句話（V2-02／#403）；後端沒回報時不猜（`null`）。 */
+export function cronText(cron: ConsensusCronStatus | undefined): string | null {
+  if (!cron) return null;
+  if (cron.runs_today > 0) {
+    return `今天已執行 ${cron.runs_today} 次（處理 ${cron.symbols_today} 檔）`;
+  }
+  if (cron.last_run_day === null) return `排程尚未執行（近 ${cron.lookback_days} 天沒有紀錄）`;
+  return `今天尚未執行；最近一次在 ${cron.last_run_day}`;
 }
 
 export interface RetryContext {
@@ -64,6 +89,8 @@ export interface RetryContext {
   /** 來源回 429 後的全站暫停結束時間（`rate_limited_until`）；暫停中什麼都
    *  不會打上游。 */
   rateLimitedUntil?: string | null;
+  /** 排程實際執行的紀錄（V2-02／#403）：從沒執行過就不說「會自動更新」。 */
+  cron?: ConsensusCronStatus;
 }
 
 function rateLimitedReason(seconds: number): string {
@@ -73,7 +100,7 @@ function rateLimitedReason(seconds: number): string {
 export function retryGate(s: ConsensusRefreshSymbol, nowMs: number,
                           ctx: RetryContext = {}): RetryGate {
   if (ctx.capReached && (s.state === "pending" || isFailed(s))) {
-    return { enabled: false, reason: `今日上游呼叫已達每日上限，${nextAutoUpdate(ctx.today)}`,
+    return { enabled: false, reason: `今日上游呼叫已達每日上限，${nextAutoUpdate(ctx.today, ctx.cron)}`,
              remainingSeconds: null };
   }
   const paused = secondsUntil(ctx.rateLimitedUntil ?? null, nowMs);
@@ -92,7 +119,7 @@ export function retryGate(s: ConsensusRefreshSymbol, nowMs: number,
         : { enabled: true, reason: null, remainingSeconds: 0 };
     }
     case "exhausted":
-      return { enabled: false, reason: `今天的重試次數已用完，${nextAutoUpdate(ctx.today)}`,
+      return { enabled: false, reason: `今天的重試次數已用完，${nextAutoUpdate(ctx.today, ctx.cron)}`,
                remainingSeconds: null };
     case "in_progress":
       return { enabled: false, reason: "另一個更新正在處理這一檔", remainingSeconds: null };

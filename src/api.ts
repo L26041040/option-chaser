@@ -1405,6 +1405,18 @@ export interface ConsensusRefreshStatusResponse {
   /** 使用者母體裡超出每日更新範圍的檔數與代號（進度不含它們）。 */
   out_of_scope?: number;
   out_of_scope_symbols?: string[];
+  /** 排程（`GET /api/cron/consensus-refresh`）實際執行的紀錄（V2-02／#403）。
+   *  只有授權成功的執行才會留紀錄：`last_run_day: null`＝排程尚未執行。 */
+  cron?: ConsensusCronStatus;
+}
+
+export interface ConsensusCronStatus {
+  /** 今天（美東）授權成功的執行次數與處理的檔數。 */
+  runs_today: number;
+  symbols_today: number;
+  /** 保留窗（`lookback_days` 天）內最近一次執行的美東日；沒有為 `null`。 */
+  last_run_day: string | null;
+  lookback_days: number;
 }
 
 /** `POST /api/opportunity/consensus/update`。形狀以
