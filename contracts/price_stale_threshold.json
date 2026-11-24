@@ -1,0 +1,4 @@
+{
+  "_comment": "V2-05（#407）：股價過舊的門檻只有一份。後端 api_app/price_quote.py 與前端 src/targetUpside.ts 的 STALE_AFTER_TRADING_DAYS 必須等於這裡的值；兩邊的測試（tests/test_price_quote.py、src/targetUpside.test.ts）都讀這份檔案。改門檻要同時改這裡與兩邊的常數。",
+  "stale_after_trading_days": 3
+}

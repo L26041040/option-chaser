@@ -17,7 +17,8 @@
 import type { QuoteFields, UpsideReason } from "./api";
 import { money } from "./scenarios";
 
-/** 與後端 `api_app/price_quote.py` 的 `STALE_AFTER_TRADING_DAYS` 相同。 */
+/** 與後端 `api_app/price_quote.py` 的 `STALE_AFTER_TRADING_DAYS` 相同；兩邊的測試都
+ *  比對 `contracts/price_stale_threshold.json`（唯一一份）。 */
 export const STALE_AFTER_TRADING_DAYS = 3;
 
 export const UPSIDE_REASON_LABELS: Record<UpsideReason, string> = {

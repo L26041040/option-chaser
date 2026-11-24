@@ -113,6 +113,13 @@ describe("nextAutoUpdate（排程只在平日跑）", () => {
     expect(nextAutoUpdate("2026-09-25", never))
       .toBe("排程尚未執行，不會自動更新，下週一請手動「繼續更新」");
   });
+
+  it("無法確認排程狀態（known: false）：不承諾自動更新", () => {
+    const unknown = { known: false, runs_today: null, symbols_today: null,
+                      last_run_day: null, lookback_days: 30 };
+    expect(nextAutoUpdate("2026-09-28", unknown))
+      .toBe("無法確認排程狀態，明天請手動「繼續更新」");
+  });
 });
 
 describe("cronText（排程實際執行情形，只依授權成功的紀錄）", () => {
@@ -136,6 +143,12 @@ describe("cronText（排程實際執行情形，只依授權成功的紀錄）",
 
   it("後端沒回報（舊版）：不猜", () => {
     expect(cronText(undefined)).toBeNull();
+  });
+
+  it("後端無法確認（觀測指標關閉，known: false）：照實說無法確認，不說尚未執行", () => {
+    expect(cronText({ known: false, runs_today: null, symbols_today: null,
+                      last_run_day: null, lookback_days: 30 }))
+      .toBe("無法確認排程狀態");
   });
 });
 

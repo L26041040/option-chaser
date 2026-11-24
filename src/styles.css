@@ -4874,11 +4874,6 @@ body {
     padding-top: 10px;
     padding-bottom: 10px;
   }
-
-  /* 桌面：表頭各欄自己有 ⓘ，手機用的說明列不重複出現。 */
-  .opp-help-mobile {
-    display: none;
-  }
 }
 
 @media (max-width: 1099.98px) {

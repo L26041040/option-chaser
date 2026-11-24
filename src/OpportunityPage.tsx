@@ -540,16 +540,19 @@ function ConfiguredBody({
             </label>
           </div>
           <p className="caption opp-disclaimer">{RETURN_DISCLAIMER}</p>
-          {/* 手機版表頭隱藏：說明改放在這一列（桌面隱藏，表頭各欄自己有 ⓘ）。 */}
-          <MetricHelpRow metrics={RESULT_HELP} className="opp-help-mobile" />
+          {/* 結果表的指標說明列（桌面、手機都顯示）是鍵盤與螢幕報讀器的唯一
+              入口。表頭各欄的 ⓘ 只給滑鼠懸停（`decorative`：`aria-hidden`、
+              不進 Tab 順序）——按鈕名稱混進 `<th>`，每一格都會被念成
+              「成本、最大損失說明」；手機版表頭又是隱藏的。 */}
+          <MetricHelpRow metrics={RESULT_HELP} className="opp-help-results" />
           <table className="tbl opp-table">
             <thead>
               <tr>
                 <th scope="col" className="opp-th-stock">
                   <span className="opp-th-main">標的</span>
                   <span className="opp-th-sub">
-                    <span className="metric-help-item">目前股價<MetricInfo metric="currentPrice" /></span>
-                    <span className="metric-help-item">目標漲跌幅<MetricInfo metric="targetUpside" /></span>
+                    <span className="metric-help-item">目前股價<MetricInfo metric="currentPrice" decorative /></span>
+                    <span className="metric-help-item">目標漲跌幅<MetricInfo metric="targetUpside" decorative /></span>
                   </span>
                 </th>
                 <th scope="col">策略</th>
@@ -558,12 +561,12 @@ function ConfiguredBody({
                 <th scope="col">目標月份</th>
                 <th scope="col" className="r">
                   {COST_LABEL}
-                  <MetricInfo metric="costAndMaxLoss" />
+                  <MetricInfo metric="costAndMaxLoss" decorative />
                 </th>
                 <th scope="col" className="r">{MAX_LOSS_LABEL}</th>
                 <th scope="col" className="r">
                   {RETURN_LABEL}
-                  <MetricInfo metric="scenarioReturn" />
+                  <MetricInfo metric="scenarioReturn" decorative />
                 </th>
                 <th scope="col" className="r">損益兩平</th>
                 <th scope="col"><span className="sr-only">動作</span></th>

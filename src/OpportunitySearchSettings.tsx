@@ -31,6 +31,7 @@ import {
 import {
   PR_HISTORY_EXPLAINER,
   percentileMaxFromPrInput,
+  prInputError,
   prInputFromPercentileMax,
   prThresholdLabel,
 } from "./dispersionRank";
@@ -107,8 +108,9 @@ function numberOrRaw(text: string): number | string {
   return text.trim() !== "" && Number.isFinite(n) ? n : text;
 }
 
-/** 逗號（含全形）、空白、換行都當分隔；大小寫在這裡轉成大寫——後端只收
- *  大寫 ticker，去重與合法性由後端判斷。 */
+/** 逗號（含全形）、空白、換行都當分隔；順手轉成大寫。後端會再 canonical 化
+ *  一次（大小寫、`BRK-B`／`brk/b` → `BRK.B`，#404）才驗證，去重與合法性由
+ *  後端判斷。 */
 function parseSymbols(text: string): string[] {
   return text.split(/[\s,，、]+/).filter(Boolean).map((s) => s.toUpperCase());
 }
@@ -171,6 +173,12 @@ function OpportunitySearchSettingsForm({
   }
 
   async function save() {
+    const prError = prInputError(draft.percentile_max);
+    if (prError) {
+      setNotice(null);
+      setError(prError);
+      return;
+    }
     const next = await put({
       universe_id: draft.universe_id,
       custom_symbols: parseSymbols(draft.customText),
@@ -217,10 +225,12 @@ function OpportunitySearchSettingsForm({
               id={`opp-${key}`}
               className="settings-input"
               type="number"
-              inputMode="decimal"
+              // PR 門檻只收整數（畫面上的 PR 向下取整，見 `prInputError()`）；
+              // 分歧率上限可以有小數。
+              inputMode={key === "percentile_max" ? "numeric" : "decimal"}
               min={0}
               max={100}
-              step="any"
+              step={key === "percentile_max" ? 1 : "any"}
               value={draft[key]}
               onChange={(e) => edit({ [key]: e.target.value } as Partial<Draft>)}
             />

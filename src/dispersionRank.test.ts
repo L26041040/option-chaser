@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   percentileMaxFromPrInput,
   prDisplay,
+  prInputError,
   prInputFromPercentileMax,
   prLabel,
   prThresholdLabel,
@@ -129,6 +130,16 @@ describe("設定頁門檻：PR 輸入 ↔ 已存的原百分位", () => {
   it("空白或不是數字：原字串照送，讓後端回它的驗證訊息", () => {
     expect(percentileMaxFromPrInput("")).toBe("");
     expect(percentileMaxFromPrInput("abc")).toBe("abc");
+  });
+
+  it("PR 門檻必須是整數：小數照實回錯誤訊息；整數、空白、不是數字的不在這裡擋", () => {
+    expect(prInputError("79.9")).toBe("分歧度歷史排序門檻：PR 門檻必須是整數（例如 80）");
+    expect(prInputError("80.0001")).not.toBeNull();
+    expect(prInputError("80")).toBeNull();
+    expect(prInputError(" 80 ")).toBeNull();
+    expect(prInputError("101")).toBeNull();      // 超出範圍交給後端擋
+    expect(prInputError("")).toBeNull();
+    expect(prInputError("abc")).toBeNull();
   });
 
   it("超出 0–100 的 PR 換算後也超出範圍（交給後端擋）", () => {

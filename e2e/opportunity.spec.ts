@@ -152,10 +152,15 @@ test("SU：導覽進頁 → 符合條件的股票 → 搜尋（續跑）→ 切�
   await expect(results.getByRole("button", { name: "目標漲跌幅說明" })).toBeVisible();
   await expect(results.getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeVisible();
   if (isDesktop()) {
-    await expect(results.getByRole("columnheader", { name: /^標的/ })
-      .getByRole("button", { name: "目標漲跌幅說明" })).toBeVisible();
-    await expect(results.getByRole("columnheader", { name: /^股價達標時的策略報酬/ })
-      .getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeVisible();
+    // 表頭各欄的 ⓘ 看得到，但只給滑鼠（aria-hidden）：欄位名稱不混進「…說明」，
+    // 鍵盤與螢幕報讀器用上面那一列。
+    const stockHead = results.getByRole("columnheader", { name: /^標的/ });
+    const returnHead = results.getByRole("columnheader", { name: /^股價達標時的策略報酬/ });
+    await expect(stockHead.locator('button[aria-label="目標漲跌幅說明"]')).toBeVisible();
+    await expect(returnHead.locator('button[aria-label="股價達標時的策略報酬說明"]'))
+      .toBeVisible();
+    await expect(stockHead).not.toHaveAccessibleName(/說明/);
+    await expect(returnHead).not.toHaveAccessibleName(/說明/);
   } else {
     // 手機卡片：股票層級整寬放在最上面，策略數字在它下面。
     const stock = await longCall.locator('td[data-label="標的"]').boundingBox();
@@ -553,8 +558,10 @@ test("失敗（#401）：冷卻中停用並倒數，時間到按下真的重試�
 
 // ---------- V2-04（#406）：指標說明 ⓘ ----------
 
-/** ⓘ 的說明卡（`aria-describedby` 指向的 role=tooltip，展開時才存在）。 */
+/** ⓘ 的說明卡（展開時 `aria-describedby` 指向的 role=tooltip，展開時才存在；
+ *  收起時 `aria-describedby` 指向常駐的 hidden 描述文字，所以先等展開）。 */
 async function tooltipOf(page: Page, button: Locator) {
+  await expect(button).toHaveAttribute("aria-expanded", "true");
   await expect(button).toHaveAttribute("aria-describedby", /.+/);
   const id = await button.getAttribute("aria-describedby");
   return page.locator(`[id="${id}"]`);
@@ -655,6 +662,8 @@ test("指標說明（#406）：鍵盤可聚焦，Enter 開、Esc 關且焦點留
   await openOpportunityWithResults(page);
   const icon = page.getByRole("region", { name: "掃描股票範圍" })
     .getByRole("button", { name: "掃描股票範圍說明" });
+  // 聚焦之前（說明卡還沒渲染）就有無障礙描述：第一次聚焦就念得到。
+  await expect(icon).toHaveAccessibleDescription(/計算口徑/);
   await icon.focus();
   await expect(icon).toBeFocused();
   const tip = await tooltipOf(page, icon);

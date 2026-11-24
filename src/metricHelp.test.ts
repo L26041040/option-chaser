@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { prDisplay, prLabel } from "./dispersionRank";
+import { PR_HISTORY_EXPLAINER, prDisplay, prLabel } from "./dispersionRank";
 import { METRIC_HELP, metricHelpLabel, type MetricHelpKey } from "./metricHelp";
 import { ratioPct } from "./opportunity";
 import { money } from "./scenarios";
@@ -112,5 +112,26 @@ describe("說明裡的範例數字與程式口徑一致", () => {
     expect(text).toMatch(/平均目標價/);
     expect(text).toMatch(/情境/);
     expect(text).toMatch(/機率/);
+  });
+});
+
+describe("PR 的歷史口徑：說明卡與設定頁同一句（後端 `_last_weekday`）", () => {
+  it("兩處都寫「每月最後一個平日」，都不寫「交易日」", () => {
+    for (const text of [allText("dispersionRank"), PR_HISTORY_EXPLAINER]) {
+      expect(text).toContain("每月最後一個平日");
+      expect(text).not.toContain("交易日");
+    }
+  });
+});
+
+describe("排程的說明不無條件承諾自動更新（正式站排程可能沒有在跑）", () => {
+  it("每日上限、輪替更新：自動的部分以「排程運作時」為條件，並說明要手動繼續", () => {
+    for (const key of ["dailyCap", "rotatingUpdate"] as const) {
+      const text = allText(key);
+      expect(text, key).toContain("排程運作時");
+      expect(text, key).toContain("手動「繼續更新」");
+      // 每一處「下一個平日自動／接著更新」都要緊接在「排程運作時」之後。
+      expect(text, key).not.toMatch(/(?<!排程運作時)下一個平日(自動|接著)/);
+    }
   });
 });

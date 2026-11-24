@@ -1428,9 +1428,13 @@ export interface ConsensusRefreshStatusResponse {
 }
 
 export interface ConsensusCronStatus {
-  /** 今天（美東）授權成功的執行次數與處理的檔數。 */
-  runs_today: number;
-  symbols_today: number;
+  /** 後端能不能確認排程狀態：觀測指標關閉（`enable_metrics=False`）時根本沒有
+   *  執行紀錄，回 `false`、數字為 `null`——畫面說「無法確認」，不說「尚未
+   *  執行」。舊後端沒有這個鍵，視為 `true`。 */
+  known?: boolean;
+  /** 今天（美東）授權成功的執行次數與處理的檔數（`known: false` 時為 `null`）。 */
+  runs_today: number | null;
+  symbols_today: number | null;
   /** 保留窗（`lookback_days` 天）內最近一次執行的美東日；沒有為 `null`。 */
   last_run_day: string | null;
   lookback_days: number;
@@ -1451,7 +1455,9 @@ export interface ConsensusUpdateResponse {
   remaining: string[];
   skipped: { symbol: string; state: ConsensusRefreshState;
              next_retry_at: string | null; message: string }[];
-  stopped_reason: "daily_cap" | "rate_limited" | null;
+  /** `"another_run_active"`：另一個更新（排程或其他 SU）正在跑，這次什麼都
+   *  沒做（`message` 說明），稍後再按「繼續更新」。 */
+  stopped_reason: "daily_cap" | "rate_limited" | "another_run_active" | null;
   message: string | null;
   /** `stopped_reason: "rate_limited"` 時的全站暫停結束時間（ISO UTC）。 */
   rate_limited_until?: string | null;

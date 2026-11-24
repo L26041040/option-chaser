@@ -102,14 +102,17 @@ describe("機會搜尋頁的 ⓘ", () => {
 
     await user.click(within(selected).getByRole("button", { name: "搜尋選擇權" }));
     const results = await screen.findByRole("region", { name: "搜尋結果" });
-    // V2-06（#408）：桌面在表頭各欄、手機（表頭隱藏）在區塊頂端的說明列，
-    // 兩處各一顆（CSS 只讓其中一處出現）。
+    // 結果表的說明：鍵盤與螢幕報讀器用區塊頂端的說明列（桌面、手機都顯示）；
+    // 表頭裡的 ⓘ 只給滑鼠（aria-hidden），欄位的無障礙名稱不會混進「…說明」。
     const thead = results.querySelector("thead") as HTMLElement;
-    const mobileHelp = results.querySelector(".opp-help-mobile") as HTMLElement;
-    for (const scope of [thead, mobileHelp]) {
-      for (const key of ["currentPrice", "targetUpside", "costAndMaxLoss", "scenarioReturn"] as const) {
-        expectHelp(scope, key);
-      }
+    const helpRow = results.querySelector(".opp-help-results") as HTMLElement;
+    for (const key of ["currentPrice", "targetUpside", "costAndMaxLoss", "scenarioReturn"] as const) {
+      expectHelp(helpRow, key);
+    }
+    expect(within(thead).queryAllByRole("button")).toHaveLength(0);
+    expect(within(thead).getAllByRole("button", { hidden: true })).toHaveLength(4);
+    for (const header of within(thead).getAllByRole("columnheader")) {
+      expect(header).not.toHaveAccessibleName(/說明/);
     }
   });
 });

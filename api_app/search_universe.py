@@ -15,8 +15,8 @@
 
 舊的「大型股樣本」（`sample-large-cap`，約 50 檔暫定清單）已退役：存著這個
 值的舊設定一律讀成 `sp500`（`normalize_universe_id()`），不會壞。那 50 檔
-改當 `REFRESH_PRIORITY`——每日更新有上限時優先更新的順序（#403 擴到全部
-成分股之前的過渡）。
+改當 `REFRESH_PRIORITY`——每日更新母體超過上限時一定保留的那一批（只影響
+截斷，不影響每次先抓誰；見常數註解）。
 
 代號一律 canonical 點寫法（`BRK.B`），各資料來源的寫法由
 `option_chaser.symbols` 轉換。
@@ -40,8 +40,10 @@ LEGACY_SAMPLE_LARGE_CAP = "sample-large-cap"
 CUSTOM_SYMBOLS_MAX = 50
 
 # 與 `api_app/main.py::_SYMBOL` 同一組字元（symbol 會被代入資料源的 URL），
-# 但這裡要求**已經是大寫**、且以字母開頭——存進設定的是正規化後的值，
-# 大小寫轉換由前端在送出前做，後端不替使用者猜。
+# 但這裡要求**已經是 canonical**（大寫、點寫法）、且以字母開頭——檢查的是
+# 存進設定的值。使用者輸入的大小寫、`BRK-B`／`brk/b` 由後端先以
+# `option_chaser.symbols.canonical_symbol()` 正規化，再用這條規則驗證
+# （`opportunity_settings`，#404）。
 _TICKER_RE = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 
 _SP500_LABEL = "S&P 500 成分股"
@@ -50,9 +52,12 @@ _CUSTOM_LABEL = "自訂清單"
 SP500_SYMBOLS: tuple[str, ...] = tuple(s for s, _ in sp500_constituents.CONSTITUENTS)
 SP500_VERSION: str = sp500_constituents.VERSION
 
-# 每日更新有上限（`consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP`）時優先更新的
-# 大型股（原「大型股樣本」，依名稱熟悉度挑，不代表排名或權重；全部是 S&P 500
-# 成分股，有測試守門）。#403 把每日更新擴到全部成分股後即可移除。
+# 每日更新母體超過上限（`consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP`）時**一定
+# 留在範圍內**的大型股（原「大型股樣本」，依名稱熟悉度挑，不代表排名或權重；
+# 全部是 S&P 500 成分股，有測試守門）。#403 之後它不再決定每次先抓誰（那由
+# 公平輪替 `consensus_cache.rotation_key()` 決定），只決定截斷時的保留順序：
+# 這 50 檔 → 自訂清單 → 其餘成分股。預設上限 600 容得下整份成分股時，它不影響
+# 任何結果；上限被調低時才會用到。
 REFRESH_PRIORITY: tuple[str, ...] = (
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "LLY",
     "V", "UNH", "XOM", "MA", "JNJ", "PG", "HD", "COST", "ABBV", "MRK",

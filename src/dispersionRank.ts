@@ -52,7 +52,17 @@ export function percentileMaxFromPrInput(text: string): number | string {
   return text.trim() !== "" && Number.isFinite(n) ? clean(100 - n) : text;
 }
 
+/** 設定頁 PR 輸入的整數檢查。畫面上的 PR 一律向下取整（`prDisplay()`），門檻
+ *  若是小數（例如 79.9），「畫面顯示 ≥ 門檻 ⇔ 實際通過」就不再成立，所以門檻
+ *  只收整數。是數字但不是整數時回錯誤訊息；整數（含超出 0–100）、空白與不是
+ *  數字的回 `null`，照舊交給後端驗證。存的值仍是 `percentile_max = 100 − PR`。 */
+export function prInputError(text: string): string | null {
+  const n = Number(text);
+  if (text.trim() === "" || !Number.isFinite(n) || Number.isInteger(n)) return null;
+  return "分歧度歷史排序門檻：PR 門檻必須是整數（例如 80）";
+}
+
 /** 歷史比較的口徑（`lookback_points=60`、`h_min=24`、月底取樣；演算法不在
  *  這裡，只是說明文字）。 */
 export const PR_HISTORY_EXPLAINER =
-  "分歧度歷史排序：今天的分析師分歧率放進這檔股票自己過去 60 個月的紀錄裡排序（每月取最後一個交易日，不含資料日期當天），至少要有 24 個有效月份才排序。PR 越高代表分歧越小、共識越集中；PR88＝前 12%。";
+  "分歧度歷史排序：今天的分析師分歧率放進這檔股票自己過去 60 個月的紀錄裡排序（取每月最後一個平日，不含資料日期當天），至少要有 24 個有效月份才排序。PR 越高代表分歧越小、共識越集中；PR88＝前 12%。";

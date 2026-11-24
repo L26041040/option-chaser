@@ -172,6 +172,15 @@ def test_custom_share_class_symbols_are_saved_in_canonical_dot_form(client):
     assert _opp(client)["custom_symbols"] == ["BRK.B", "GOOGL", "GOOG", "BF.B"]
 
 
+def test_custom_symbols_are_canonicalised_before_they_are_validated(client):
+    """文件承諾的輸入寬容度：小寫、`/`、`-`、頭尾空白都先正規化成 canonical
+    再驗證格式——`brk/b`、`BRK/B`、`aapl` 不會被當成不合法。"""
+    resp = _put(client, {"universe_id": "custom",
+                         "custom_symbols": ["brk/b", "BRK/B", " aapl ", "bf-b", "Msft"]})
+    assert resp.status_code == 200, resp.text
+    assert _opp(client)["custom_symbols"] == ["BRK.B", "AAPL", "BF.B", "MSFT"]
+
+
 # ---------- 驗證（沿用既有 settings 的 422 格式） ----------
 
 @pytest.mark.parametrize("field", ["percentile_max", "dispersion_max"])
@@ -205,8 +214,8 @@ def test_more_than_fifty_symbols_are_rejected(client):
     assert "最多 50 檔" in resp.json()["detail"][0]["msg"]
 
 
-@pytest.mark.parametrize("bad", ["aapl", "AA PL", "1ABC", "", "TOOLONGTICKER",
-                                 "../X", 7])
+@pytest.mark.parametrize("bad", ["AA PL", "1ABC", "", "TOOLONGTICKER",
+                                 "../X", ".AAPL", 7, None])
 def test_illegal_tickers_are_rejected(client, bad):
     resp = _put(client, {"universe_id": "custom", "custom_symbols": ["AAPL", bad]})
     assert resp.status_code == 422, resp.text

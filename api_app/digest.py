@@ -21,6 +21,12 @@ from dataclasses import dataclass
 from email.mime.text import MIMEText
 
 from .ops_alerts import AlertCondition
+from .opportunity_settings import DEFAULT_DISPERSION_MAX, DEFAULT_PERCENTILE_MAX
+
+# 摘要的「符合條件」用全站預設門檻（使用者各自的門檻不在摘要裡）；寫法與
+# 畫面一致：第一道門檻以 PR 表示（PR ＝ 100 − 原百分位，#405）。
+_DEFAULT_GATE_LABEL = (f"預設 PR ≥ {100 - DEFAULT_PERCENTILE_MAX:g}、"
+                       f"分析師分歧率 ≤ {DEFAULT_DISPERSION_MAX:g}%")
 
 
 @dataclass(frozen=True)
@@ -99,7 +105,7 @@ def build_digest_text(snapshot: DigestSnapshot) -> str:
         lines.append(f"  成功：{c['succeeded']}")
         lines.append(f"  失敗：{c['failed']}")
         lines.append(f"  資料不足或無資料：{c['insufficient']}")
-        lines.append(f"  入選（預設門檻 20%／10%）：{c['selected']}")
+        lines.append(f"  符合條件（{_DEFAULT_GATE_LABEL}）：{c['selected']}")
         if "not_reached" in c:
             lines.append(f"  尚未輪到：{c['not_reached']}（每日更新範圍 {c['universe']} 檔）")
         cron = c.get("cron")
@@ -119,6 +125,8 @@ def build_digest_text(snapshot: DigestSnapshot) -> str:
 def cron_line(cron: dict) -> str:
     """排程實際執行情形的一句話（V2-02／#403）——只依授權成功的執行紀錄
     （`consensus_cache.cron_view()`），不從 vercel.json 有設定去推論。"""
+    if cron.get("known") is False:
+        return "無法確認（觀測指標已關閉，沒有排程執行紀錄）"
     if cron["runs_today"] > 0:
         return f"今天已執行 {cron['runs_today']} 次（處理 {cron['symbols_today']} 檔）"
     if cron["last_run_day"] is None:

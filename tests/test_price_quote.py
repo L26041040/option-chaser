@@ -12,8 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from api_app.analyst_source import FixtureAnalystSource
 from api_app.price_quote import (STALE_AFTER_TRADING_DAYS, PriceQuote,
-                                 quote_record, target_upside_pct,
+                                 positive_price, quote_record, target_upside_pct,
                                  trading_days_after, upside_fields)
 from option_chaser.consensus import SplitEvent
 
@@ -57,6 +58,13 @@ def test_stale_threshold_is_three_trading_days():
     assert STALE_AFTER_TRADING_DAYS == 3
 
 
+def test_stale_threshold_matches_the_shared_contract():
+    """前後端同一份門檻（`contracts/price_stale_threshold.json`，前端
+    `src/targetUpside.test.ts` 讀同一份）。"""
+    doc = json.loads(Path("contracts/price_stale_threshold.json").read_text(encoding="utf-8"))
+    assert STALE_AFTER_TRADING_DAYS == doc["stale_after_trading_days"]
+
+
 # ---------- 存進快照的報價紀錄 ----------
 
 def test_quote_record_after_close_is_labelled_close_with_new_york_date():
@@ -95,6 +103,19 @@ def test_quote_record_none_without_quote():
     assert quote_record(None, (), MON) is None
 
 
+@pytest.mark.parametrize("price", ["0", "-1.5", "NaN", "Infinity"])
+def test_quote_record_drops_a_non_positive_or_non_finite_price(price):
+    assert quote_record(PriceQuote(Decimal(price), FRI_CLOSE), (), MON) is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("12.5", Decimal("12.5")), (3, Decimal("3")), ("0", None), (-2, None),
+    ("NaN", None), ("abc", None), (None, None), (True, None),
+])
+def test_positive_price(raw, expected):
+    assert positive_price(raw) == expected
+
+
 # ---------- 畫面欄位與缺資料原因 ----------
 
 def _rec(**over):
@@ -116,6 +137,30 @@ def test_no_price_yet():
     assert out["price"] is None and out["price_date"] is None
     assert out["target_upside_pct"] is None
     assert out["target_upside_reason"] == "no_price"
+
+
+@pytest.mark.parametrize("price", ["0", "-3", "0.00"])
+def test_stored_non_positive_price_reads_as_no_price_instead_of_dividing(price):
+    """快取裡已經存了 0 或負的股價（舊資料、來源異常）：不除、不 500，照
+    「尚未取得股價」處理。"""
+    out = upside_fields(_rec(price=price), Decimal("120"), MON)
+    assert out["price"] is None and out["target_upside_pct"] is None
+    assert out["target_upside_reason"] == "no_price"
+
+
+@pytest.mark.parametrize("price", ["0", "-10"])
+def test_fixture_source_rejects_a_non_positive_price(tmp_path, price):
+    """測試資料來源與 Yahoo（`_positive_decimal`）同一條規則：股價 ≤ 0 不算
+    取得股價。"""
+    path = tmp_path / "fixture.json"
+    at = "2026-11-20T21:00:01+00:00"
+    path.write_text(json.dumps({"name": "fx", "symbols": {
+        "AAA": {"records": [], "quote": {"price": price, "at": at}},
+        "BBB": {"records": [], "quote": {"price": "101.5", "at": at}}}}),
+        encoding="utf-8")
+    src = FixtureAnalystSource(path)
+    assert src.fetch("AAA", MON).quote is None
+    assert src.fetch("BBB", MON).quote == PriceQuote(Decimal("101.5"), FRI_CLOSE)
 
 
 def test_price_too_old():

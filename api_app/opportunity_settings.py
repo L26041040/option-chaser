@@ -116,10 +116,12 @@ class OpportunitySearchRequest(BaseModel):
         if not isinstance(v, list):
             raise ValueError("自訂清單必須是 ticker 陣列")
         out: list[str] = []
-        for s in v:
+        for raw in v:
+            # 先 canonical 化再驗證（#404）：`brk/b`、`BRK-B`、` aapl ` 都先變成
+            # `BRK.B`／`AAPL`，格式檢查看的是正規化後、真正會存的值。
+            s = canonical_symbol(raw) if isinstance(raw, str) else raw
             if not search_universe.is_valid_ticker(s):
-                raise ValueError(f"不合法的 ticker：{s}（請用大寫代號，例如 AAPL）")
-            s = canonical_symbol(s)              # BRK-B → BRK.B（#404）
+                raise ValueError(f"不合法的 ticker：{raw}（請用股票代號，例如 AAPL、BRK.B）")
             if s not in out:
                 out.append(s)
         if len(out) > CUSTOM_SYMBOLS_MAX:

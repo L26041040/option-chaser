@@ -35,7 +35,7 @@ from option_chaser.data.yahoo_analyst import (YahooClient, YahooError,
                                               split_basis_through)
 from option_chaser.symbols import canonical_symbol
 
-from .price_quote import PriceQuote
+from .price_quote import PriceQuote, positive_price
 
 COVERAGES = ("complete", "partial", "unknown")
 
@@ -123,8 +123,10 @@ class FixtureAnalystSource:
             cross_check=ConsensusCrossCheck(
                 consensus_mean_from_source=Decimal(cross["consensus_mean_from_source"]),
                 n_from_source=cross.get("n_from_source")) if cross else None,
-            quote=(PriceQuote(Decimal(quote["price"]), datetime.fromisoformat(quote["at"]))
-                   if quote else None))
+            # 股價 ≤ 0 或讀不懂 → 沒有股價（與 Yahoo 的 `_positive_decimal` 同規則）。
+            quote=(PriceQuote(price, datetime.fromisoformat(quote["at"]))
+                   if quote and (price := positive_price(quote.get("price"))) is not None
+                   else None))
 
 
 class YahooAnalystSource:

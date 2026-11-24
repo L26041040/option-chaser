@@ -38,7 +38,7 @@ export const METRIC_HELP = {
     direction:
       "PR 越高，代表現在的共識比過去更集中。PR88＝比過去 88% 的月份更集中（前 12%）。",
     basis:
-      "回看 60 個月，每月取月底（當月最後一個平日）的分歧率，只用早於資料日期的月份，至少 24 個有效月份才計算。用 midrank 算出原百分位，PR＝100 − 原百分位。畫面上的 PR 向下取整（原百分位 20.4% → PR79），篩選看的是未取整的原值，所以畫面顯示達標就一定通過。",
+      "回看 60 個月，取每月最後一個平日（月底）的分歧率，只用早於資料日期的月份，至少 24 個有效月份才計算。用 midrank 算出原百分位，PR＝100 − 原百分位。畫面上的 PR 向下取整（原百分位 20.4% → PR79），篩選看的是未取整的原值，所以畫面顯示達標就一定通過。",
   },
   dispersionRate: {
     name: "分析師分歧率",
@@ -111,7 +111,7 @@ export const METRIC_HELP = {
     definition: "每天最多向分析師資料來源抓幾次資料（一次＝一檔股票）。",
     direction: "沒有好壞方向；達到上限只是今天暫停更新，已建立的資料照常可以搜尋。",
     basis:
-      "成功、失敗與重試都算進當天次數；達到上限後當天不再更新或重試，下一個平日自動更新。",
+      "成功、失敗與重試都算進當天次數；達到上限後當天不再更新或重試。次數每天歸零：排程運作時下一個平日自動接著更新；排程尚未執行時，請在下一個平日手動「繼續更新」。",
   },
   rateLimitPause: {
     name: "限流暫停",
@@ -122,14 +122,20 @@ export const METRIC_HELP = {
   },
   rotatingUpdate: {
     name: "輪替更新",
-    definition: "平日排程逐檔更新掃描範圍內的股票，不是一次全部重抓。",
+    definition: "逐檔更新掃描範圍內的股票（平日排程或手動「繼續更新」），不是一次全部重抓。",
     direction: "沒有好壞方向；只影響資料多快更新完。",
     basis:
-      "當天已成功的股票不重抓；失敗的冷卻 15 分鐘後重試，預設最多 3 次；當天沒更新完的，下一個平日接著更新。",
+      "當天已成功的股票不重抓；失敗的冷卻 15 分鐘後重試，預設最多 3 次。當天沒更新完的：排程運作時下一個平日接著更新；排程尚未執行時，請手動「繼續更新」。畫面上的「排程」會照實顯示排程有沒有在跑。",
   },
 } as const satisfies Record<string, MetricHelpEntry>;
 
 export type MetricHelpKey = keyof typeof METRIC_HELP;
+
+/** ⓘ 的純文字說明（`aria-describedby`）：與說明卡同樣的三段，第一次聚焦就念得到。 */
+export function metricHelpDescription(key: MetricHelpKey): string {
+  const h = METRIC_HELP[key];
+  return `定義：${h.definition} 方向：${h.direction} 計算口徑：${h.basis}`;
+}
 
 /** ⓘ 圖示的 aria-label：「分析師分歧率說明」。 */
 export function metricHelpLabel(key: MetricHelpKey): string {

@@ -60,21 +60,30 @@ function nextDayWord(today: string | undefined): "明天" | "下週一" {
  *
  * V2-02（#403）：`cron` 是排程實際執行的紀錄。沒有任何一次授權成功的執行
  * （`last_run_day: null`，例如正式站還沒設 `CRON_SECRET`）時不說「會自動
- * 更新」——照實說排程尚未執行、要手動繼續。
+ * 更新」——照實說排程尚未執行、要手動繼續。後端無法確認排程狀態
+ * （`known: false`）時同樣不承諾，說「無法確認排程狀態」。
  */
 export function nextAutoUpdate(today: string | undefined,
                                cron?: ConsensusCronStatus): string {
   const day = nextDayWord(today);
+  if (cron && cron.known === false) {
+    return `${CRON_UNKNOWN}，${day}請手動「繼續更新」`;
+  }
   if (cron && cron.last_run_day === null) {
     return `排程尚未執行，不會自動更新，${day}請手動「繼續更新」`;
   }
   return `${day}自動更新`;
 }
 
-/** 排程實際執行情形的一句話（V2-02／#403）；後端沒回報時不猜（`null`）。 */
+/** 後端沒有排程執行紀錄可查（觀測指標關閉，`known: false`）時的說法。 */
+const CRON_UNKNOWN = "無法確認排程狀態";
+
+/** 排程實際執行情形的一句話（V2-02／#403）；後端沒回報時不猜（`null`）；
+ *  後端無法確認（`known: false`）時照實說無法確認。 */
 export function cronText(cron: ConsensusCronStatus | undefined): string | null {
   if (!cron) return null;
-  if (cron.runs_today > 0) {
+  if (cron.known === false) return CRON_UNKNOWN;
+  if ((cron.runs_today ?? 0) > 0) {
     return `今天已執行 ${cron.runs_today} 次（處理 ${cron.symbols_today} 檔）`;
   }
   if (cron.last_run_day === null) return `排程尚未執行（近 ${cron.lookback_days} 天沒有紀錄）`;

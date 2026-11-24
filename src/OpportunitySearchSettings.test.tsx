@@ -169,7 +169,7 @@ describe("儲存", () => {
 
     const percentile = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
     await userEvent.clear(percentile);
-    await userEvent.type(percentile, "87.5");
+    await userEvent.type(percentile, "87");
     await userEvent.click(b.getByRole("radio", { name: "自訂清單" }));
     await userEvent.type(b.getByLabelText("Ticker 清單"), "tsla, aapl\nnvda");
     await userEvent.click(b.getByRole("checkbox", { name: "Butterfly" }));
@@ -183,7 +183,7 @@ describe("儲存", () => {
       opportunity_search: {
         universe_id: "custom",
         custom_symbols: ["TSLA", "AAPL", "NVDA"],
-        percentile_max: 12.5,
+        percentile_max: 13,
         dispersion_max: 10,
         strategies: ["single-leg", "vertical-spread"],
         sort: "max_loss",
@@ -238,23 +238,40 @@ describe("分歧度歷史排序門檻：PR 輸入 ↔ 已存的原百分位（V2
     expect(putBodies(spy)[0].opportunity_search.percentile_max).toBe(20);
   });
 
-  it("輸入 PR 79.9 → 存 20.1（不帶浮點雜訊）；後端回的值再換回 PR 顯示", async () => {
-    const spy = mockPut([{ status: 200, body: view({ percentile_max: 20.1 }) }]);
-    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+  it("PR 門檻只收整數：輸入框 step=1；輸入 79.9 時不送出、照實說明", async () => {
+    // 畫面上的 PR 向下取整；門檻若可以是小數，「顯示 ≥ 門檻 ⇔ 通過」就不成立。
+    const spy = mockPut([{ status: 200, body: view() }]);
+    const onSaved = vi.fn();
+    render(<OpportunitySearchSettings view={view()} onSaved={onSaved} />);
     const b = block();
     const pr = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
+    expect(pr).toHaveAttribute("step", "1");
     await userEvent.clear(pr);
     await userEvent.type(pr, "79.9");
     await userEvent.click(b.getByRole("button", { name: "儲存" }));
 
-    await waitFor(() => expect(b.getByRole("status")).toHaveTextContent("已儲存"));
-    expect(putBodies(spy)[0].opportunity_search.percentile_max).toBe(20.1);
-    expect(pr).toHaveValue(79.9);
+    expect(await b.findByRole("alert")).toHaveTextContent("PR 門檻必須是整數");
+    expect(putBodies(spy)).toHaveLength(0);
+    expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it("說明文字照既有口徑：60 個月、每月最後一個交易日、至少 24 個有效月份", () => {
+  it("輸入整數 PR 75 → 存 25", async () => {
+    const spy = mockPut([{ status: 200, body: view({ percentile_max: 25 }) }]);
     render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
-    expect(block().getByText(/過去 60 個月.*最後一個交易日.*24 個有效月份/))
+    const b = block();
+    const pr = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
+    await userEvent.clear(pr);
+    await userEvent.type(pr, "75");
+    await userEvent.click(b.getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(b.getByRole("status")).toHaveTextContent("已儲存"));
+    expect(putBodies(spy)[0].opportunity_search.percentile_max).toBe(25);
+    expect(pr).toHaveValue(75);
+  });
+
+  it("說明文字照既有口徑：60 個月、每月最後一個平日、至少 24 個有效月份", () => {
+    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    expect(block().getByText(/過去 60 個月.*每月最後一個平日.*24 個有效月份/))
       .toBeInTheDocument();
   });
 });

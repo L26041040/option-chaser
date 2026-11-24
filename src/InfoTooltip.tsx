@@ -24,7 +24,10 @@ import { createPortal } from "react-dom";
  *   Esc 關閉，焦點留在圖示上；Tab 離開就收起。
  * - 無障礙：圖示是原生 `<button>`、`aria-label`＝說明名稱、`aria-expanded`；
  *   展開時 `aria-describedby` 指向 `role="tooltip"` 的說明卡。說明卡不收
- *   焦點（焦點始終在圖示上），收起時不渲染。
+ *   焦點（焦點始終在圖示上），收起時不渲染。給了 `description`（純文字）時，
+ *   收起狀態的 `aria-describedby` 指向一段常駐、`hidden` 的同內容文字——
+ *   Tab 第一次聚焦的那一刻說明卡還沒渲染，螢幕報讀器仍能念出說明。那段
+ *   文字掛在 `document.body`，不混進周圍元素的文字內容。
  * - 版面：說明卡用 portal 掛在 `document.body`、`position: fixed`，依圖示
  *   位置擺放並夾在視窗內（左右各留 16px），不會被捲動容器或表格裁切，
  *   也不會撐出橫向捲動；下方放不下時改放上方。
@@ -35,12 +38,20 @@ const HOVER_CLOSE_DELAY_MS = 120;
 
 export default function InfoTooltip({
   label,
+  description,
+  decorative = false,
   children,
 }: {
   label: string;
+  /** 只給滑鼠的視覺提示：圖示 `aria-hidden`、`tabIndex=-1`（放在 `<th>` 裡時，
+   *  按鈕名稱才不會混進欄位名稱）；同一則說明必須另有一顆一般的圖示。 */
+  decorative?: boolean;
+  /** 說明卡的純文字版（給 `aria-describedby`，見上方「無障礙」）。 */
+  description?: string;
   children: React.ReactNode;
 }) {
   const id = useId();
+  const descId = `${id}-desc`;
   const [hover, setHover] = useState(false);
   const [active, setActive] = useState(false);
   const open = hover || active;
@@ -141,8 +152,10 @@ export default function InfoTooltip({
         type="button"
         className="pinfo-btn"
         aria-label={label}
+        aria-hidden={decorative || undefined}
+        tabIndex={decorative ? -1 : undefined}
         aria-expanded={open}
-        aria-describedby={open ? id : undefined}
+        aria-describedby={open ? id : description ? descId : undefined}
         onPointerDown={() => {
           pointerDown.current = true;
         }}
@@ -183,6 +196,13 @@ export default function InfoTooltip({
           <path d="M12 8h.01M11 12h1v4h1" />
         </svg>
       </button>
+      {description &&
+        createPortal(
+          <span id={descId} hidden>
+            {description}
+          </span>,
+          document.body,
+        )}
       {open &&
         createPortal(
           <span

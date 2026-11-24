@@ -22,6 +22,7 @@ from decimal import Decimal
 import pytest
 from fastapi.testclient import TestClient
 
+from api_app import consensus_cache
 from api_app import main as main_module
 from api_app.analyst_source import ProviderResult
 from api_app.consensus_cache import RefreshPolicy
@@ -394,8 +395,9 @@ def test_two_concurrent_triggers_for_the_same_symbol_call_upstream_once():
     assert entered.wait(10)
     source.on_fetch = None
     second = client.post(UPDATE, json={"symbols": ["AAPL"]})   # 另一位 SU 同時按
+    # 全站同時只跑一個更新：第二個呼叫在取單檔標記之前就被擋下。
     assert second.status_code == 409
-    assert second.json()["detail"]["state"] == "in_progress"
+    assert second.json()["detail"]["stage"] == consensus_cache.RUN_ACTIVE_STAGE
     assert _sym(_status(client), "AAPL")["state"] == "in_progress"
     release.set()
     worker.join(10)
@@ -404,6 +406,62 @@ def test_two_concurrent_triggers_for_the_same_symbol_call_upstream_once():
     # 第一位做完之後，第三次也不重打（今天已成功）。
     assert client.post(UPDATE, json={"symbols": ["AAPL"]}).status_code == 409
     assert source.calls == ["AAPL"]
+
+
+def _hold_run_lock(storage, *, now=T0, ttl=75):
+    assert storage.acquire_consensus_refresh_lease(
+        consensus_cache.RUN_LOCK_KEY, "other-run", now=now, ttl_seconds=ttl)
+
+
+def test_overlapping_cron_run_returns_at_once_without_calling_upstream():
+    """Hobby 的 cron 在那一小時內任一時刻觸發，相鄰時段可能重疊：重疊的那次
+    立刻回 `another_run_active`，不打上游（不會讓請求速率加倍）。"""
+    source = ScriptedSource()
+    client, storage = _client(source)
+    _hold_run_lock(storage)
+    r = client.get("/api/cron/consensus-refresh", headers=CRON)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stopped_reason"] == "another_run_active"
+    assert body["processed"] == 0 and body["message"] == consensus_cache.RUN_ACTIVE_MESSAGE
+    assert source.calls == []
+
+
+def test_su_continuation_respects_the_run_lock_and_says_why():
+    source = ScriptedSource()
+    client, storage = _client(source)
+    _hold_run_lock(storage)
+    body = _update(client)
+    assert body["stopped_reason"] == "another_run_active"
+    assert body["message"] == consensus_cache.RUN_ACTIVE_MESSAGE
+    assert body["processed"] == 0 and source.calls == []
+    r = client.post(UPDATE, json={"symbols": ["AAPL"]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"stage": consensus_cache.RUN_ACTIVE_STAGE,
+                                  "message": consensus_cache.RUN_ACTIVE_MESSAGE}
+    assert source.calls == []
+
+
+def test_run_lock_lasts_slightly_longer_than_the_run_budget_and_is_released():
+    """鎖的期限＝一次執行的時間預算＋餘裕（大於函式 maxDuration 60 秒）：正常
+    執行中不會過期；函式被砍時最晚在這個期限後自動失效。做完就釋放。"""
+    from datetime import timedelta
+
+    seen = []
+    clock = Clock()
+    holder = {}
+
+    def peek(symbol):
+        seen.append(holder["storage"].consensus_refresh_leases(now=clock())
+                    .get(consensus_cache.RUN_LOCK_KEY))
+
+    source = ScriptedSource(on_fetch=peek)
+    client, storage = _client(source, clock=clock, refresh_run_budget=timedelta(seconds=45))
+    holder["storage"] = storage
+    _update(client, ["AAPL"])
+    assert seen == [T0 + 45 + consensus_cache.RUN_LOCK_MARGIN_SECONDS]
+    assert 45 + consensus_cache.RUN_LOCK_MARGIN_SECONDS > 60
+    assert consensus_cache.RUN_LOCK_KEY not in storage.consensus_refresh_leases(now=T0)
 
 
 def test_an_abandoned_in_progress_marker_can_be_taken_after_it_expires():

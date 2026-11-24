@@ -3,12 +3,32 @@
  * 互動與擺位沿用共用的 `InfoTooltip`（桌面懸停、手機點按、鍵盤 Enter／Esc）。
  */
 import InfoTooltip from "./InfoTooltip";
-import { METRIC_HELP, metricHelpLabel, type MetricHelpKey } from "./metricHelp";
+import {
+  METRIC_HELP,
+  metricHelpDescription,
+  metricHelpLabel,
+  type MetricHelpKey,
+} from "./metricHelp";
 
-export default function MetricInfo({ metric }: { metric: MetricHelpKey }) {
+/**
+ * `decorative`：只給滑鼠懸停的視覺提示（放在 `<th>` 裡時用）——圖示對輔助科技
+ * 隱藏、不進 Tab 順序，欄位名稱不會混進「…說明」。同一則說明必須另外有一顆
+ * 一般的 ⓘ（例如 `MetricHelpRow`）給鍵盤與螢幕報讀器。
+ */
+export default function MetricInfo({
+  metric,
+  decorative = false,
+}: {
+  metric: MetricHelpKey;
+  decorative?: boolean;
+}) {
   const h = METRIC_HELP[metric];
   return (
-    <InfoTooltip label={metricHelpLabel(metric)}>
+    <InfoTooltip
+      label={metricHelpLabel(metric)}
+      description={decorative ? undefined : metricHelpDescription(metric)}
+      decorative={decorative}
+    >
       <span className="pinfo-title">{h.name}</span>
       <span className="pinfo-sec"><b>定義</b>{h.definition}</span>
       <span className="pinfo-sec"><b>方向</b>{h.direction}</span>

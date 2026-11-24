@@ -12,6 +12,7 @@
   },
   "daily_cap": 900,
   "cron": {
+    "known": true,
     "runs_today": 0,
     "symbols_today": 0,
     "last_run_day": null,

@@ -542,11 +542,19 @@ describe("OpportunityPage：搜尋與續跑", () => {
     const returnHead = headers[returnCol];
     expect(upsideHead).toHaveTextContent(/^標的/);
     expect(upsideHead).toHaveTextContent("目前股價");
-    expect(within(upsideHead).getByRole("button", { name: "目標漲跌幅說明" })).toBeInTheDocument();
-    expect(within(upsideHead).getByRole("button", { name: "目前股價說明" })).toBeInTheDocument();
-    expect(within(upsideHead).queryByRole("button", { name: "股價達標時的策略報酬說明" })).toBeNull();
-    expect(within(returnHead).getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeInTheDocument();
-    expect(within(returnHead).queryByRole("button", { name: "目標漲跌幅說明" })).toBeNull();
+    // 表頭裡的 ⓘ 只給滑鼠（aria-hidden、不進 Tab 順序）：欄位名稱不混進「…說明」，
+    // 鍵盤與螢幕報讀器用區塊頂端的說明列。
+    const icon = (head: HTMLElement, label: string) =>
+      head.querySelector(`button[aria-label="${label}"]`);
+    expect(icon(upsideHead, "目標漲跌幅說明")).toHaveAttribute("tabindex", "-1");
+    expect(icon(upsideHead, "目前股價說明")).toHaveAttribute("aria-hidden", "true");
+    expect(icon(upsideHead, "股價達標時的策略報酬說明")).toBeNull();
+    expect(icon(returnHead, "股價達標時的策略報酬說明")).toHaveAttribute("aria-hidden", "true");
+    expect(icon(returnHead, "目標漲跌幅說明")).toBeNull();
+    for (const head of [upsideHead, returnHead]) {
+      expect(within(head).queryAllByRole("button")).toHaveLength(0);
+      expect(head).not.toHaveAccessibleName(/說明/);
+    }
 
     // 每一列：目標漲跌幅在標的那一格（第 upsideCol 格），策略報酬在自己那一格。
     const rows = within(results).getAllByRole("row", { name: /^AAA / });
@@ -562,8 +570,8 @@ describe("OpportunityPage：搜尋與續跑", () => {
       expect(cells[returnCol].textContent).toMatch(/^[+-]?[\d.,]+%$/);
     }
 
-    // 手機版表頭隱藏：區塊頂端的說明列兩者也是各自一顆 ⓘ。
-    const help = results.querySelector(".opp-help-mobile") as HTMLElement;
+    // 區塊頂端的說明列（桌面、手機都顯示）：兩者各自一顆可聚焦的 ⓘ。
+    const help = results.querySelector(".opp-help-results") as HTMLElement;
     expect(within(help).getByRole("button", { name: "目標漲跌幅說明" })).toBeInTheDocument();
     expect(within(help).getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeInTheDocument();
   });

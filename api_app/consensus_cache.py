@@ -238,6 +238,18 @@ RATE_LIMITED_MESSAGE = ("資料來源回應限流（429），所有分析師資�
 # 同一套語意。
 _PAUSE_KEY = "!rate_limited:{source}"
 _PAUSE_HOLDER = "source-pause"
+# 全站同時只跑一個更新（cron 與 SU「繼續更新」／「重試」共用）：同一張處理中
+# 標記表裡的另一個保留鍵。Hobby 方案的 cron 在指定那一小時內任一時刻觸發，
+# 相鄰時段可能重疊；沒有這把鎖，兩次執行會同時打上游、讓請求速率加倍。
+# 鎖的期限＝一次執行的時間預算＋`RUN_LOCK_MARGIN_SECONDS`（呼叫端傳入
+# `run_lock_seconds`）：大於函式 maxDuration（60 秒），正常執行中不會過期；
+# 函式被砍、沒釋放時，最晚過了期限就自動失效。
+RUN_LOCK_KEY = "!refresh_run"
+RUN_LOCK_MARGIN_SECONDS = 30
+DEFAULT_RUN_LOCK_SECONDS = 75
+RUN_ACTIVE_STAGE = "consensus_run_active"
+RUN_ACTIVE_MESSAGE = ("另一個分析師資料更新（排程或其他 SU）正在執行，這次沒有更新；"
+                      "請稍後再按「繼續更新」")
 _UPSTREAM_SCOPE = "consensus_upstream"
 _DAY_SECONDS = 86400
 _EASTERN = ZoneInfo("America/New_York")
@@ -361,7 +373,21 @@ def rotation_key(symbol: str, st: ConsensusRefreshState | None) -> tuple:
     後面，重試不會吃掉首次嘗試的名額。"""
     if st is None:
         return ("", "", "", symbol)
-    return (st.attempted_day, (st.last_success_at or "")[:10], st.attempted_at, symbol)
+    return (st.attempted_day, _ny_date(st.last_success_at), st.attempted_at, symbol)
+
+
+def _ny_date(iso: str | None) -> str:
+    """ISO 時間戳 → 它的美東日（`YYYY-MM-DD`）；沒有或讀不懂回空字串（＝最舊）。
+    輪替的另一個鍵 `attempted_day` 是美東日，兩者要同一個時區才能比。"""
+    if not iso:
+        return ""
+    try:
+        at = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.astimezone(_EASTERN).date().isoformat()
 
 
 def _skip(symbol: str, state: str, st: ConsensusRefreshState | None) -> dict:
@@ -432,13 +458,45 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
                     policy: RefreshPolicy = DEFAULT_POLICY,
                     clock: Callable[[], float] = time.time,
                     sleep: Callable[[float], None] = time.sleep,
-                    batch_limit: int | None = None) -> dict:
+                    batch_limit: int | None = None,
+                    run_lock_seconds: float = DEFAULT_RUN_LOCK_SECONDS) -> dict:
+    """全站單一執行鎖（`RUN_LOCK_KEY`，期限 `run_lock_seconds`）包住
+    `_refresh_symbols_locked()`：別的更新正在跑時立刻回
+    `stopped_reason: "another_run_active"`，不讀狀態、不打上游。"""
+    holder = uuid.uuid4().hex
+    if not storage.acquire_consensus_refresh_lease(RUN_LOCK_KEY, holder, now=clock(),
+                                                   ttl_seconds=run_lock_seconds):
+        bucket = _upstream_bucket(source, today, policy)
+        return {"source": source.name, "as_of": today.isoformat(), "processed": 0,
+                "processed_symbols": [], "succeeded": 0, "failed": 0,
+                "already_attempted_today": 0, "remaining": [], "skipped": [],
+                "stopped_reason": "another_run_active", "message": RUN_ACTIVE_MESSAGE,
+                "rate_limited_until": None,
+                "upstream_calls_today": storage.rate_limit_count(bucket),
+                "daily_cap": policy.daily_upstream_cap}
+    try:
+        return _refresh_symbols_locked(
+            storage, source, symbols, today, budget_exhausted=budget_exhausted,
+            rules=rules, policy=policy, clock=clock, sleep=sleep,
+            batch_limit=batch_limit)
+    finally:
+        storage.release_consensus_refresh_lease(RUN_LOCK_KEY, holder)
+
+
+def _refresh_symbols_locked(storage: Storage, source: AnalystSource,
+                            symbols: Sequence[str], today: date, *,
+                            budget_exhausted: Callable[[], bool],
+                            rules: ConsensusRules, policy: RefreshPolicy,
+                            clock: Callable[[], float],
+                            sleep: Callable[[float], None],
+                            batch_limit: int | None) -> dict:
     """處理 `symbols` 裡現在可以抓的（今天還沒試過，或失敗後冷卻已過、還有
     重試次數），最久沒嘗試的先；每處理完一檔檢查一次預算與 `batch_limit`
     （至少處理一檔）。
 
     回傳本次統計、`remaining`（可以抓、這次沒輪到的，依處理順序）、
-    `skipped`（現在不能抓的與原因）、`stopped_reason`（`"daily_cap"`＝每日
+    `skipped`（現在不能抓的與原因）、`stopped_reason`（`"another_run_active"`
+    ＝另一個更新正在跑（`refresh_symbols()` 的單一執行鎖）；`"daily_cap"`＝每日
     上限已滿；`"rate_limited"`＝來源回 429，或 429 的全站暫停還沒結束，
     `rate_limited_until` 是暫停結束時間；`message` 說明）與今天已用的上游
     呼叫數。
@@ -530,7 +588,8 @@ def refresh_symbols(storage: Storage, source: AnalystSource, symbols: Sequence[s
 def refresh_status(storage: Storage, source: AnalystSource | None,
                    symbols: Sequence[str], today: date, *, now: float,
                    policy: RefreshPolicy = DEFAULT_POLICY,
-                   search_symbols: Sequence[str] = ()) -> dict:
+                   search_symbols: Sequence[str] = (),
+                   metrics_enabled: bool = True) -> dict:
     """狀態 API（`GET /api/opportunity/consensus/status`，只限 SU／SA）：每檔
     最後成功／嘗試時間、失敗原因、今日已重試次數、下次可重試時間；全體進度、
     資料日期與今天已用的上游呼叫數。
@@ -539,7 +598,8 @@ def refresh_status(storage: Storage, source: AnalystSource | None,
     母體）裡超出更新母體的另外列在 `out_of_scope`／`out_of_scope_symbols`。"""
     outside = out_of_scope(search_symbols, symbols) if source is not None else []
     base = {"today": today.isoformat(), "now": _iso(now), "policy": policy.view(),
-            "daily_cap": policy.daily_upstream_cap, "cron": cron_view(storage, today),
+            "daily_cap": policy.daily_upstream_cap,
+            "cron": cron_view(storage, today, metrics_enabled=metrics_enabled),
             "out_of_scope": len(outside), "out_of_scope_symbols": outside}
     if source is None:
         return {**base, "source": {"configured": False, "name": None,
@@ -579,17 +639,24 @@ def refresh_status(storage: Storage, source: AnalystSource | None,
                 storage, source, now=now)) is not None else None)}
 
 
-def cron_view(storage: Storage, today: date) -> dict:
+def cron_view(storage: Storage, today: date, *, metrics_enabled: bool = True) -> dict:
     """排程實際執行的紀錄（V2-02／#403）：今天授權成功的執行次數、處理的檔數，
     以及保留窗內（`metrics.RETENTION_DAYS`）最近一次執行的美東日。
 
     只有 `GET /api/cron/consensus-refresh` 授權成功才會留紀錄（被 401 的呼叫
     什麼都不寫），所以 `last_run_day: None` 就是「排程尚未執行」——正式站沒設
-    `CRON_SECRET` 時就是這樣，畫面與摘要照實顯示，不假裝排程正常。"""
+    `CRON_SECRET` 時就是這樣，畫面與摘要照實顯示，不假裝排程正常。
+
+    `metrics_enabled=False`（`create_app(enable_metrics=False)`）時紀錄根本不會
+    寫，沒有紀錄不代表沒執行——回 `known: False`、數字為 `None`（「無法確認
+    排程狀態」），不說「尚未執行」。"""
+    if not metrics_enabled:
+        return {"known": False, "runs_today": None, "symbols_today": None,
+                "last_run_day": None, "lookback_days": metrics.RETENTION_DAYS}
     entries = [e for e in storage.metric_summary()
                if e.metric == CRON_RUN_METRIC and e.count > 0]
     day = today.isoformat()
-    return {"runs_today": sum(e.count for e in entries if e.bucket == day),
+    return {"known": True, "runs_today": sum(e.count for e in entries if e.bucket == day),
             "symbols_today": int(sum(e.total for e in entries if e.bucket == day)),
             "last_run_day": max((e.bucket for e in entries), default=None),
             "lookback_days": metrics.RETENTION_DAYS}
@@ -633,11 +700,12 @@ def _gate_view(gate: consensus.GateResult) -> dict:
 
 def _item(symbol: str, status: str, *, reasons: Sequence[str], gate: dict,
           snap: ConsensusSnapshot | None = None,
-          target_month: str | None = None,
-          quote: dict | None = None, today: date | None = None) -> dict:
+          today: date, target_month: str | None = None,
+          quote: dict | None = None) -> dict:
     """清單項目的唯一形狀（有無 Snapshot 都走這裡，鍵不會分家）。沒有
     Snapshot 時數值一律 `None`、人數與歷史點數為 0。股價欄位（`price`…
-    `target_upside_reason`，V2-05／#407）見 `price_quote.upside_fields()`。"""
+    `target_upside_reason`，V2-05／#407）見 `price_quote.upside_fields()`；
+    `today` 必填——有報價時要靠它判斷股價過舊。"""
     def number(name: str) -> float | None:
         return _decimal_to_float(getattr(snap, name)) if snap else None
     return {"symbol": symbol, "status": status,
@@ -658,8 +726,8 @@ def _item(symbol: str, status: str, *, reasons: Sequence[str], gate: dict,
             **upside_fields(quote, snap.mean if snap else None, today)}
 
 
-def _empty_item(symbol: str, status: str, reason: str) -> dict:
-    return _item(symbol, status, reasons=[reason],
+def _empty_item(symbol: str, status: str, reason: str, *, today: date) -> dict:
+    return _item(symbol, status, reasons=[reason], today=today,
                  gate={"first": False, "second": False, "selected": False,
                        "reasons": [reason]})
 
@@ -689,8 +757,9 @@ def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
                          and st.error is not None) else None
         if rec is None:
             items.append(_empty_item(symbol, "source_error",
-                                     f"source_error: {failure.error}")
-                         if failure else _empty_item(symbol, "no_data", _NOT_REFRESHED))
+                                     f"source_error: {failure.error}", today=today)
+                         if failure else _empty_item(symbol, "no_data", _NOT_REFRESHED,
+                                                     today=today))
             continue
         item = _snapshot_item(snapshot_from_dict(rec.snapshot), today, p_max, d_max,
                               target_month_rule, quote=rec.snapshot.get("quote"))
@@ -838,9 +907,11 @@ def detail_view(storage: Storage, source: AnalystSource | None, symbol: str,
 # ---------- 每日摘要 ----------
 
 def digest_counts(storage: Storage, source: AnalystSource | None,
-                  today: date, universe: Sequence[str] = ()) -> dict | None:
+                  today: date, universe: Sequence[str] = (), *,
+                  metrics_enabled: bool = True) -> dict | None:
     """今天（同一來源）的更新統計；來源未設定回 `None`。入選數以預設門檻
-    （#389 §6：20%／10%）計算——門檻是每位使用者自己的設定，摘要只看全站。
+    （#389 §6：PR ≥ 80／分歧率 ≤ 10%）計算——門檻是每位使用者自己的設定，
+    摘要只看全站。
 
     V2-02／#403：`universe`＝每日更新範圍（`refresh_universe()`）；
     `not_reached`＝其中這個交易日還沒被嘗試過的檔數（公平輪替還沒輪到）；
@@ -868,4 +939,4 @@ def digest_counts(storage: Storage, source: AnalystSource | None,
             "selected": sum(1 for s in todays
                             if consensus.evaluate_gate(s, p_max, d_max).selected),
             "universe": len(wanted), "not_reached": not_reached,
-            "cron": cron_view(storage, today)}
+            "cron": cron_view(storage, today, metrics_enabled=metrics_enabled)}

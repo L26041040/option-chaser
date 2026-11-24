@@ -231,3 +231,21 @@ def test_detail_item_and_search_summary_carry_the_same_price_fields():
     assert {k: detail["item"][k] for k in fields} == {k: listed[k] for k in fields}
     summary = consensus_summary(listed)
     assert {k: summary[k] for k in fields} == {k: listed[k] for k in fields}
+
+
+def test_list_item_requires_today_so_staleness_is_never_skipped():
+    """`consensus_cache._item()` 一定要拿到「今天」：有報價時要靠它判斷股價過舊，
+    沒有預設值可以讓呼叫端漏傳（漏傳在有報價時會 500）。"""
+    import inspect
+
+    for fn in (consensus_cache._item, consensus_cache._empty_item):
+        param = inspect.signature(fn).parameters["today"]
+        assert param.default is inspect.Parameter.empty, fn.__name__
+    quote = {"price": "100", "at": "2026-11-20T21:00:01+00:00", "date": "2026-11-20",
+             "kind": "close", "split_basis_mismatch": False}
+    gate = {"first": False, "second": False, "selected": False, "reasons": []}
+    with pytest.raises(TypeError):
+        consensus_cache._item("AAA", "no_data", reasons=[], gate=gate, quote=quote)
+    empty = consensus_cache._empty_item("AAA", "no_data", "no_data: 尚未更新",
+                                        today=date(2026, 11, 23))
+    assert empty["target_upside_reason"] == "no_price"

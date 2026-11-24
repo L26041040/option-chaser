@@ -725,6 +725,97 @@ def test_consensus_source_rate_limit_pause_is_shared_and_expires(storage):
     consensus_cache.pause_source(storage, _Src, now=2800.0, seconds=60)
     assert consensus_cache.rate_limited_until(storage, _Src, now=2801.0) == 2860.0
 
+
+def test_consensus_refresh_runs_never_overlap(storage):
+    """全站同時只跑一個共識更新（cron 與 SU「繼續更新」共用）：第二個同時進來
+    的呼叫立刻回 `another_run_active`、一次上游都不打；第一個做完（鎖釋放）
+    之後下一次照常進行。鎖存在既有的處理中標記表的保留列，不用新表。"""
+    import threading
+    from datetime import date
+    from decimal import Decimal
+
+    from api_app import consensus_cache
+    from api_app.analyst_source import ProviderResult
+    from option_chaser.consensus import AnalystTargetRecord
+
+    entered, release = threading.Event(), threading.Event()
+
+    class _Blocking:
+        name, is_fixture = "blocking", False
+
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def fetch(self, symbol, today):
+            self.calls.append(symbol)
+            entered.set()
+            assert release.wait(10)
+            return ProviderResult(coverage="complete", records=tuple(
+                AnalystTargetRecord(symbol=symbol, analyst_key=f"F{i}", firm=f"F{i}",
+                                    target_price=Decimal(p),
+                                    published_on=date(2026, 9, 1))
+                for i, p in enumerate(("110", "115", "120", "125", "130"))))
+
+    source = _Blocking()
+    today = date(2026, 10, 14)
+    policy = consensus_cache.RefreshPolicy(call_spacing_seconds=0)
+    clock = lambda: 1_790_000_000.0                                # noqa: E731
+
+    def run(symbols):
+        return consensus_cache.refresh_symbols(
+            storage, source, symbols, today, budget_exhausted=lambda: False,
+            policy=policy, clock=clock, sleep=lambda _s: None, run_lock_seconds=75)
+
+    first: dict = {}
+    worker = threading.Thread(target=lambda: first.update(run(["AAA"])))
+    worker.start()
+    assert entered.wait(10)
+    second = run(["BBB", "CCC"])
+    assert second["stopped_reason"] == "another_run_active"
+    assert second["processed"] == 0 and second["processed_symbols"] == []
+    assert second["message"] == consensus_cache.RUN_ACTIVE_MESSAGE
+    assert source.calls == ["AAA"]                     # 第二個呼叫沒有打上游
+    release.set()
+    worker.join(10)
+    assert first["processed_symbols"] == ["AAA"] and first["stopped_reason"] is None
+    third = run(["BBB"])
+    assert third["processed_symbols"] == ["BBB"]
+    assert source.calls == ["AAA", "BBB"]
+    assert consensus_cache.RUN_LOCK_KEY not in storage.consensus_refresh_leases(
+        now=clock())
+
+
+def test_consensus_refresh_run_lock_expires_after_a_crash(storage):
+    """持鎖的函式被砍（沒釋放）：鎖在 `run_lock_seconds` 後自動失效。"""
+    from datetime import date
+
+    from api_app import consensus_cache
+    from api_app.analyst_source import ProviderResult
+
+    class _Empty:
+        name, is_fixture = "empty", False
+        calls = 0
+
+        def fetch(self, symbol, today):
+            _Empty.calls += 1
+            return ProviderResult()
+
+    t0 = 1_790_000_000.0
+    assert storage.acquire_consensus_refresh_lease(
+        consensus_cache.RUN_LOCK_KEY, "crashed", now=t0, ttl_seconds=75)
+
+    def run(now):
+        return consensus_cache.refresh_symbols(
+            storage, _Empty(), ["AAA"], date(2026, 10, 14),
+            budget_exhausted=lambda: False,
+            policy=consensus_cache.RefreshPolicy(call_spacing_seconds=0),
+            clock=lambda: now, sleep=lambda _s: None, run_lock_seconds=75)
+
+    assert run(t0 + 74)["stopped_reason"] == "another_run_active"
+    assert _Empty.calls == 0
+    assert run(t0 + 75)["processed_symbols"] == ["AAA"]
+    assert _Empty.calls == 1
+
 def test_rate_limit_count_reads_the_bucket_without_consuming(storage):
     bucket = RateLimitBucket("consensus_upstream", "yahoo-udh", 86400, 1_790_000_000, 2)
     assert storage.rate_limit_count(bucket) == 0

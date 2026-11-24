@@ -186,6 +186,17 @@ describe("分析師資料：更新（自動續跑）", () => {
     expect(updateBodies(spy)).toEqual([{}]);
   });
 
+  it("另一個更新正在執行（排程或其他 SU）：停下、照實說明，不再續跑", async () => {
+    const { spy, panel } = await renderPanel({ update: [{ status: 200, body: {
+      ...UPDATE, processed: 0, processed_symbols: [], remaining: [],
+      stopped_reason: "another_run_active",
+      message: "另一個分析師資料更新（排程或其他 SU）正在執行，這次沒有更新；請稍後再按「繼續更新」" } }] });
+    await userEvent.click(within(panel).getByRole("button", { name: "更新分析師資料" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "另一個分析師資料更新（排程或其他 SU）正在執行");
+    expect(updateBodies(spy)).toEqual([{}]);
+  });
+
   it("後端拒絕：顯示後端訊息", async () => {
     const { panel } = await renderPanel({ update: [{ status: 409,
       body: { detail: "尚未設定分析師資料來源" } }] });

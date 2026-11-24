@@ -90,7 +90,21 @@ BF.B）。**兩種類別各自是一檔股票**，各自查分析師資料、各
 - Cboe 的 `BRK.B` 寫法沒有實測過（沙箱連 Cboe 一律被 Cloudflare 擋 403）。依
   Cboe 網站的寫法採用點；如果 Cboe 不認，降級鏈會接著用 Yahoo `BRK-B`，劇本
   照樣拿得到報價。
+- **尚未對照的來源（2026-11-24 查證未果，行為維持原樣）**：
+  - Market Data App（`option_chaser/data/marketdata.py` 的即時鏈與歷史鏈，
+    使用者自備金鑰時才用）送出 `symbol.upper()`，也就是 canonical `BRK.B`。
+  - FMP 配息（`option_chaser/data/dividends.py`，設了 `FMP_API_KEY` 才用；Yahoo
+    配息失敗時的第二棒）送出 canonical `BRK.B`。
+  - 只查了官方公開文件：Market Data App 的 API 文件沒有寫股權類別代號的請求
+    寫法（只有一篇教學文章提到點是股權類別的慣例，沒說 API 收哪一種）；FMP
+    官方文件頁面從沙箱讀取被拒（403），查不到明文。兩者都沒有實測（沙箱沒有
+    金鑰，也不打真實上游）。沒有官方依據就不猜：`symbols.py` 不加這兩個來源
+    的對照。若日後確認某個來源只收 `BRK-B`，比照 `yahoo_symbol()` 在
+    `symbols.py` 加一個轉換函式並補測試。FMP 失敗時配息接著試 Nasdaq。
 - V2-01 之前存下的自訂清單若有 `BRK-B`，讀取時就當成 `BRK.B`（不回寫）。
+- 已存成 `BRK-B` 的舊劇本不遷移：重算時每個來源在組 URL 那一刻各自換寫法
+  （`cboe_symbol()`／`yahoo_symbol()`），結果掛回 canonical
+  （`tests/test_production_chain_fallback.py` 有測試）。新建劇本一律存 `BRK.B`。
 - 範圍：美國掛牌普通股。Yahoo 對非美國交易所用 `.T`、`.DE` 這類後綴，不在支援
   範圍內。
 

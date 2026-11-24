@@ -73,8 +73,8 @@ describe("ConsensusDetail：共識怎麼算出來的", () => {
     expect(facts).toHaveTextContent("合格歷史點60 / 60 個月");
     expect(facts).toHaveTextContent("有效券商數35");
     expect(facts).toHaveTextContent("資料日期2026-11-21");
-    // 歷史比較的口徑：60 個月、月底最後一個交易日、至少 24 個有效月份。
-    expect(panel).toHaveTextContent(/過去 60 個月.*最後一個交易日.*24 個有效月份/);
+    // 歷史比較的口徑：60 個月、每月最後一個平日、至少 24 個有效月份。
+    expect(panel).toHaveTextContent(/過去 60 個月.*每月最後一個平日.*24 個有效月份/);
   });
 
   it("目前股價帶報價日期、目標漲跌幅（V2-05／#407）", async () => {

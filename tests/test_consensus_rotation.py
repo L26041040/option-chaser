@@ -174,3 +174,22 @@ def test_rotation_order_is_never_tried_then_oldest_attempt_then_oldest_data():
         sleep=lambda _s: None, batch_limit=1)
     order = body["processed_symbols"] + body["remaining"]
     assert order == ["AAA", "FFF", "BBB", "EEE", "CCC", "DDD"]
+
+
+def test_rotation_key_compares_data_age_by_new_york_date_not_utc():
+    """`attempted_day` 是美東日；「資料最舊」也要用美東日比，不能拿 UTC 時間戳
+    的前 10 個字元。美東 11/23 晚上 22:00 的成功（UTC 已是 11/24）跟同一天
+    15:00 的成功是同一天的資料，順序交給嘗試時刻決定。"""
+    day = "2026-11-24"
+    late = ConsensusRefreshState(
+        symbol="LATE", source="sim", attempted_day=day,
+        attempted_at="2026-11-24T14:00:00+00:00", error="x", attempts=1,
+        last_success_at="2026-11-24T03:00:00+00:00")      # 美東 11/23 22:00
+    early = ConsensusRefreshState(
+        symbol="EARLY", source="sim", attempted_day=day,
+        attempted_at="2026-11-24T15:00:00+00:00", error="x", attempts=1,
+        last_success_at="2026-11-23T20:00:00+00:00")      # 美東 11/23 15:00
+    states = {"LATE": late, "EARLY": early}
+    key = consensus_cache.rotation_key
+    assert key("LATE", late)[1] == key("EARLY", early)[1] == "2026-11-23"
+    assert sorted(states, key=lambda s: key(s, states[s])) == ["LATE", "EARLY"]

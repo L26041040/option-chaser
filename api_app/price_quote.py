@@ -29,12 +29,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from option_chaser.consensus import SplitEvent
 
+# 前端 `src/targetUpside.ts` 有同名常數；兩邊的測試都比對
+# `contracts/price_stale_threshold.json`（唯一一份）。
 STALE_AFTER_TRADING_DAYS = 3
 REASONS = ("no_price", "no_mean", "split_mismatch", "price_stale")
 _NY = ZoneInfo("America/New_York")
@@ -48,6 +50,19 @@ class PriceQuote:
 
     price: Decimal
     at: datetime
+
+
+def positive_price(value) -> Decimal | None:
+    """有限、大於 0 的股價（`Decimal`）；0、負數、NaN／Infinity、讀不懂的值
+    （含 bool）一律 `None`——與 Yahoo 路徑的 `_positive_decimal` 同一條規則。
+    沒有合法股價就當作「尚未取得股價」，絕不拿它當除數。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        d = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return d if d.is_finite() and d > 0 else None
 
 
 def target_upside_pct(mean: Decimal, price: Decimal) -> Decimal:
@@ -77,7 +92,7 @@ def quote_record(quote: PriceQuote | None, splits: Iterable[SplitEvent],
     """存進共識快照的報價（Decimal 存字串）。`as_of`＝這次更新的資料日（美東，
     也就是抓取日）。報價日早於抓取日、或時間已過 16:00 美東 → 那天的收盤；
     否則是盤中價。"""
-    if quote is None:
+    if quote is None or positive_price(quote.price) is None:
         return None
     local = quote.at.astimezone(_NY)
     on = local.date()
@@ -93,10 +108,11 @@ def upside_fields(quote: dict | None, mean: Decimal | None, today: date) -> dict
     `target_upside_reason` 寫原因代碼（`REASONS`）。"""
     out = {"price": None, "price_date": None, "price_at": None, "price_kind": None,
            "target_upside_pct": None, "target_upside_reason": None}
-    if quote is None:
+    # 0／負數／讀不懂的股價（舊快取或來源異常）與沒有股價同樣處理，不除。
+    price = positive_price(quote.get("price")) if quote is not None else None
+    if price is None:
         out["target_upside_reason"] = "no_price"
         return out
-    price = Decimal(quote["price"])
     out.update(price=float(price), price_date=quote["date"],
                price_at=quote["at"], price_kind=quote["kind"])
     if mean is None:

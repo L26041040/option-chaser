@@ -241,3 +241,47 @@ def test_share_class_scenario_is_saved_canonical_and_each_source_gets_its_spelli
     saved = storage.latest_result(sid, owner="solo")
     assert saved.view["meta"]["source"] == "yahoo"
     assert saved.view["meta"]["symbol"] == "BRK.B"
+
+
+def test_legacy_scenario_stored_as_brk_hyphen_still_refreshes_without_migration(
+        monkeypatch):
+    """#404 之前建立的劇本存的是 `BRK-B`（建立時還沒 canonical 化）。不做資料
+    遷移：重算時各來源照樣拿到自己的寫法（Cboe `BRK.B`、Yahoo `BRK-B`），
+    分析成功；劇本本身的代號原樣保留。"""
+    from api_app.storage import Scenario
+
+    monkeypatch.setattr(main_module, "ny_today", lambda: DAY)
+    transport = OptionsReplayTransport()
+    monkeypatch.setattr(yahoo_options, "fetch_chain",
+                        lambda symbol: YahooOptionsClient(transport).fetch_chain(
+                            symbol, now=lambda: RECORDED_AT))
+    monkeypatch.setattr(yf, "available", lambda: False)
+    asked_cboe: list[str] = []
+
+    def cboe(symbol):
+        asked_cboe.append(symbol)
+        raise FetchError(f"Cboe 抓取失敗（{symbol}）: HTTP 403")
+
+    storage = MemoryStorage()
+    storage.create_scenario(Scenario(
+        id="legacybrk", symbol="BRK-B", direction="bullish", target_price=600.0,
+        target_month="2026-11", notes="", strategies=("single-leg",),
+        created_at="2026-10-01T00:00:00+00:00", owner_id="solo"))
+    client = TestClient(create_app(
+        identity_resolver=lambda: "solo", storage=storage, cboe_fetch=cboe,
+        rate_loader=_sample_rate_loader, dividend_loader=_sample_dividend_loader))
+    r = client.post("/api/scenarios/legacybrk/refresh")
+    assert r.status_code == 200, r.text
+    # 注入的 Cboe 呼叫收到劇本原樣的代號；真實 Cboe adapter 送出前一律
+    # `cboe_symbol()`（`BRK-B` → `BRK.B`，見 tests/test_data_cboe.py）。
+    assert asked_cboe == ["BRK-B"]
+    option_calls = transport.option_calls
+    assert option_calls and all("/v7/finance/options/BRK-B?" in u for u in option_calls)
+    saved = storage.latest_result("legacybrk", owner="solo")
+    assert saved is not None and saved.view["meta"]["source"] == "yahoo"
+    assert saved.view["meta"]["symbol"] == "BRK.B"      # 資料掛回 canonical
+    assert saved.view["results"]                        # 分析有產出候選
+    # 沒有遷移：劇本照舊存 `BRK-B`，清單照常讀得到。
+    assert storage.get_scenario("legacybrk", owner="solo").symbol == "BRK-B"
+    listed = client.get("/api/scenarios").json()
+    assert any(s["id"] == "legacybrk" for s in listed)

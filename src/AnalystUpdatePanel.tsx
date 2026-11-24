@@ -84,6 +84,13 @@ const PHASE_LABELS: Record<DataPhase["kind"], string> = {
   capped: "已達今日上限",
 };
 
+/** 後端沒附 `message` 時（舊後端）停下來的說法。 */
+const STOPPED_FALLBACK = {
+  daily_cap: "今日上游呼叫已達每日上限",
+  rate_limited: "資料來源限流（429）",
+  another_run_active: "另一個分析師資料更新正在執行，請稍後再按「繼續更新」",
+} as const;
+
 export default function AnalystUpdatePanel({
   consensus, onUpdated,
 }: {
@@ -143,10 +150,10 @@ export default function AnalystUpdatePanel({
       for (;;) {
         const r = await updateConsensus();
         if (!mounted.current) return;
-        if (r.stopped_reason === "daily_cap" || r.stopped_reason === "rate_limited") {
+        if (r.stopped_reason === "daily_cap" || r.stopped_reason === "rate_limited"
+            || r.stopped_reason === "another_run_active") {
           setRun({ state: "stopped", progress: r.progress,
-                   message: r.message ?? (r.stopped_reason === "daily_cap"
-                     ? "今日上游呼叫已達每日上限" : "資料來源限流（429）") });
+                   message: r.message ?? STOPPED_FALLBACK[r.stopped_reason] });
           break;
         }
         // 沒有可續跑的、或這次一檔都沒處理（防無窮迴圈）就結束。

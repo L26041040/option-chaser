@@ -508,8 +508,21 @@ def test_status_says_the_schedule_has_not_run_when_no_authorized_cron_call_happe
     assert client.get("/api/cron/consensus-refresh").status_code == 401
     assert client.get("/api/cron/consensus-refresh",
                       headers={"Authorization": "Bearer nope"}).status_code == 401
-    assert _status(client)["cron"] == {"runs_today": 0, "symbols_today": 0,
+    assert _status(client)["cron"] == {"known": True, "runs_today": 0, "symbols_today": 0,
                                        "last_run_day": None, "lookback_days": 30}
+
+
+def test_status_says_the_schedule_is_unknown_when_metrics_are_disabled(monkeypatch):
+    """`enable_metrics=False` 時排程執行紀錄根本不會寫——不能因此說「排程尚未
+    執行」。照實回報「無法確認」（`known: False`、數字為 `None`），摘要同樣。"""
+    client, _ = _fixture_client(enable_metrics=False)
+    _run_cron(client)                       # 授權成功，但不留紀錄
+    assert _status(client)["cron"] == {"known": False, "runs_today": None,
+                                       "symbols_today": None, "last_run_day": None,
+                                       "lookback_days": 30}
+    text = _digest_text(client, monkeypatch)
+    assert "排程：無法確認（觀測指標已關閉，沒有排程執行紀錄）" in text
+    assert "尚未執行" not in text
 
 
 def test_each_authorized_cron_run_is_recorded_with_the_symbols_it_processed():
@@ -574,7 +587,8 @@ def test_daily_digest_reports_consensus_refresh_counts(monkeypatch):
     assert "成功：56" in text
     assert "失敗：1" in text
     assert "資料不足或無資料：52" in text
-    assert "入選（預設門檻 20%／10%）：2" in text
+    assert "符合條件（預設 PR ≥ 80、分析師分歧率 ≤ 10%）：2" in text
+    assert "入選" not in text and "20%／10%" not in text
     assert "尚未輪到：0（每日更新範圍 57 檔）" in text
     assert "排程：今天已執行 1 次（處理 57 檔）" in text
 

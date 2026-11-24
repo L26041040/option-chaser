@@ -2085,14 +2085,18 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
 
     @app.get("/api/cron/consensus-refresh")
     def cron_consensus_refresh(request: Request) -> dict:
-        """每日一次（`vercel.json` crons）。來源未設定時什麼都不做。
+        """平日每天 32 個時段各觸發一次（`vercel.json` crons 的 32 個條目，
+        V2-02／#403；Hobby 方案的 cron 在指定的那一小時內任一時刻觸發，相鄰
+        時段可能重疊）。來源未設定時什麼都不做。
 
         母體 = S&P 500 成分股 ∪ SU／SA 的自訂清單（總數有上限，#404）；與 SU 的「更新分析師
         資料」同一套核心（`_refresh_consensus()`）：成功的同一交易日不再抓、
-        失敗的依重試規則、每日上游上限、處理中標記。一次呼叫受
-        `refresh_run_budget` 約束，跑不完的由下一次觸發接續（游標＝每檔的
-        attempted_day，見 `api_app/consensus_cache.py`）。授權失敗先驗證再
-        動作，比照其他 cron。"""
+        失敗的依重試規則、每日上游上限、處理中標記，以及全站同時只跑一個
+        更新（重疊的那次立刻回 `stopped_reason: "another_run_active"`，不打
+        上游）。一次呼叫受 `refresh_run_budget` 約束，跑不完的由下一次觸發
+        接續：進度游標是每檔的嘗試紀錄，依公平輪替 `rotation_key()`（從沒
+        嘗試過 → 最久沒嘗試 → 資料最舊）挑下一批，見
+        `api_app/consensus_cache.py`。授權失敗先驗證再動作，比照其他 cron。"""
         if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         if analyst_source is None:
@@ -2117,7 +2121,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             budget_exhausted=lambda: time.monotonic() >= deadline,
             rules=_effective_consensus_rules,
             policy=_effective_consensus_refresh_policy,
-            clock=_clock, sleep=_consensus_refresh_sleep, batch_limit=batch_limit)
+            clock=_clock, sleep=_consensus_refresh_sleep, batch_limit=batch_limit,
+            # 全站單一執行鎖的期限：時間預算＋餘裕（> 函式 maxDuration 60 秒）。
+            run_lock_seconds=(refresh_run_budget.total_seconds()
+                              + consensus_cache.RUN_LOCK_MARGIN_SECONDS))
 
     # ---------- 匿名擁有者生命週期清理（PB-08／#300） ----------
 
@@ -2344,7 +2351,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             identity_cookie_renewals_today=identity_renewals,
             consensus=consensus_cache.digest_counts(
                 _db(), analyst_source, today,
-                _consensus_update_universe() if analyst_source is not None else ()))
+                _consensus_update_universe() if analyst_source is not None else (),
+                metrics_enabled=enable_metrics))
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 
@@ -4017,7 +4025,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         後的全站暫停中 429（`consensus_rate_limited`，帶 `rate_limited_until`），其餘
         （今天已成功、冷卻中、重試用完、別人正在處理）409
         （`consensus_not_retryable`，帶第一檔的 `state`／`next_retry_at` 與
-        每一檔的 `skipped`）。代號先 canonical 化（去空白、轉大寫、`BRK-B` →
+        每一檔的 `skipped`）；另一個更新（排程或其他 SU）正在跑時 409
+        （`consensus_run_active`）。不指定 `symbols`（繼續更新）時則照常 200，
+        `stopped_reason: "another_run_active"`、`message` 說明。代號先 canonical 化（去空白、轉大寫、`BRK-B` →
         `BRK.B`，#404）再比對更新母體。"""
         _require_opportunity_role()
         if analyst_source is None:
@@ -4036,6 +4046,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         result = _refresh_consensus(
             symbols, batch_limit=_effective_consensus_refresh_policy.batch_size)
         if body.symbols is not None and not result["processed_symbols"]:
+            if result["stopped_reason"] == "another_run_active":
+                raise HTTPException(status_code=409, detail={
+                    "stage": consensus_cache.RUN_ACTIVE_STAGE,
+                    "message": result["message"]})
             if result["stopped_reason"] == "rate_limited":
                 raise HTTPException(status_code=429, detail={
                     "stage": consensus_cache.RATE_LIMITED_STAGE,
@@ -4079,7 +4093,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
                           search_symbols: Sequence[str] = ()) -> dict:
         return consensus_cache.refresh_status(
             _db(), analyst_source, universe, ny_today(), now=_clock(),
-            policy=_effective_consensus_refresh_policy, search_symbols=search_symbols)
+            policy=_effective_consensus_refresh_policy, search_symbols=search_symbols,
+            metrics_enabled=enable_metrics)
 
     @app.get("/api/opportunity/consensus-detail/{symbol}")
     def opportunity_consensus_detail(symbol: str) -> dict:

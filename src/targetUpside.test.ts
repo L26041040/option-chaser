@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import staleThreshold from "../contracts/price_stale_threshold.json";
 import roundingCases from "../contracts/target_upside_rounding_cases.json";
 import {
   formatUpside,
+  STALE_AFTER_TRADING_DAYS,
   priceDateLabel,
   priceText,
   targetUpsidePct,
@@ -94,5 +96,13 @@ describe("目標漲跌幅的缺資料原因", () => {
   it("股價過舊時股價照樣帶日期顯示（真實數字），只是不算漲跌幅", () => {
     const stale = { ...close, target_upside_pct: null, target_upside_reason: "price_stale" as const };
     expect(priceText(stale)).toBe("$125.53（2026-11-20 收盤）");
+  });
+});
+
+describe("股價過舊的門檻（前後端同一份）", () => {
+  it("等於 contracts/price_stale_threshold.json（後端 tests/test_price_quote.py 讀同一份）", () => {
+    expect(STALE_AFTER_TRADING_DAYS).toBe(staleThreshold.stale_after_trading_days);
+    expect(UPSIDE_REASON_LABELS.price_stale)
+      .toContain(`超過 ${staleThreshold.stale_after_trading_days} 個交易日`);
   });
 });
