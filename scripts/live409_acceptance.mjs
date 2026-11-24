@@ -159,7 +159,9 @@ async function login(page) {
   const reloaded = page.waitForEvent("load");
   await page.locator("button:visible", { hasText: /^登入$/ }).first().click();
   await reloaded;
-  await page.waitForLoadState("networkidle");
+  // 開 app 會觸發既有的 Refresh Run（背景抓鏈），不等 networkidle。
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForTimeout(1500);
   return (await api(page, "GET", "/api/auth/status")).body?.role;
 }
 
@@ -781,6 +783,105 @@ function compareSaved(row, saved) {
   return { fields, mismatches, detail_page_text_contains: ui, champion_is_row, same_key_in_saved_pool: sameKey };
 }
 
+
+// ---------- resave（6de8f02 之後：存成劇本只帶該列家族） ----------
+
+const RESAVE_SYMBOLS = (process.env.OC_409_RESAVE_SYMBOLS ?? "DVN,GOOG,JPM,BAC").split(",");
+
+async function setCustomUniverse(page, symbols, pr, dMax) {
+  const section = await settingsSection(page);
+  await section.getByRole("radio", { name: /自訂清單/ }).check();
+  await section.locator("#opp-custom-symbols").fill(symbols.join(", "));
+  await section.locator("#opp-percentile_max").fill(String(pr));
+  await section.locator("#opp-dispersion_max").fill(String(dMax));
+  await section.getByRole("button", { name: "儲存" }).click();
+  await section.getByRole("status").filter({ hasText: "已儲存" }).waitFor();
+  return (await api(page, "GET", "/api/settings")).body.opportunity_search;
+}
+
+/** 畫面按「搜尋選擇權」跑完一輪，回傳 API 列（攔截回應）。 */
+async function uiSearchRows(page) {
+  await openOpportunity(page);
+  const rows = [];
+  const onResp = async (r) => {
+    if (!r.url().endsWith("/api/opportunity/search")) return;
+    try { rows.push(...(await r.json()).rows); } catch { /* */ }
+  };
+  page.on("response", onResp);
+  await runSearchRound(page, page.getByRole("button", { name: "搜尋選擇權" }), RESAVE_SYMBOLS.length);
+  page.off("response", onResp);
+  return rows;
+}
+
+const sortTop5 = (rows) => {
+  const keyOf = { return: (r) => -r.target_return, cost: (r) => r.entry_cost,
+                  max_loss: (r) => r.max_loss_per_contract };
+  return Object.fromEntries(Object.entries(keyOf).map(([id, k]) => [id, [...rows].sort((a, b) => (k(a) - k(b))
+    || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0)
+    || (a.family < b.family ? -1 : a.family > b.family ? 1 : 0)).slice(0, 5)
+    .map((r) => ({ symbol: r.symbol, family: r.family, candidate_key: r.candidate_key,
+                   cost: r.entry_cost ?? r.cost_per_share, max_loss: r.max_loss_per_contract,
+                   ret: r.target_return ?? r.strategy_return_at_target }))]));
+};
+
+/** 從畫面存一列 → 詳細頁：頭條（代表候選）、每股／每口成本、每口最大損失、報酬都要等於這一列。 */
+async function resaveOne(page, row, device) {
+  const results = page.getByRole("region", { name: "搜尋結果" });
+  const tr = results.locator(`tbody tr[data-family="${row.family}"]`)
+    .filter({ has: page.locator("td.opp-symbol", { hasText: new RegExp(`^${row.symbol.replace(".", "\\.")}\\b`) }) });
+  const matches = await tr.count();
+  await tr.first().getByRole("button", { name: "存成劇本" }).click();
+  await page.waitForURL(/#\/s\/[^/]+$/, { timeout: 120000 });
+  const id = decodeURIComponent(page.url().split("#/s/")[1]);
+  const d = await waitAnalyzed(page, id);
+  await page.waitForTimeout(2500);
+  const text = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+  const rc = d.representative_candidate;
+  const full = (d.latest_result?.candidate_pool ?? {})[rc?.candidate_key] ?? {};
+  const pct = `${(row.target_return * 100).toFixed(1)}%`;
+  const strikes = row.legs.map((l) => String(l.strike));
+  const out = {
+    device, id, saved_tw: tw(), row_matches_in_table: matches,
+    row: { symbol: row.symbol, family: row.family, subtype: row.subtype, legs: legText(row.legs),
+           candidate_key: row.candidate_key, cost_per_share: row.entry_cost,
+           cost_per_contract: Math.round(row.entry_cost * 10000) / 100,
+           max_loss_per_contract: row.max_loss_per_contract, return: row.target_return,
+           scenario_strategies: row.scenario.strategies },
+    scenario: { strategies: d.strategies, champion_key: rc?.candidate_key, champion_strategy: rc?.strategy,
+                natural_cost: full.natural_cost, max_loss_per_contract: full.max_loss_per_contract,
+                baseline_return: rc?.baseline_return, breakeven: full.breakeven, target_price: d.target_price,
+                target_month: d.target_month },
+    page: { has_return: text.includes(pct), has_cost_per_share: text.includes(money(row.entry_cost)),
+            has_cost_per_contract: text.includes(money(row.entry_cost * 100)),
+            has_max_loss_per_contract: text.includes(money(row.max_loss_per_contract)),
+            has_all_strikes: strikes.every((k) => text.includes(k)) },
+  };
+  const near = (a, b) => typeof a === "number" && typeof b === "number" && Math.abs(a - b) < 1e-6;
+  out.data_match = rc?.candidate_key === row.candidate_key && near(full.natural_cost, row.entry_cost)
+    && near(full.max_loss_per_contract, row.max_loss_per_contract) && near(rc?.baseline_return, row.target_return)
+    && JSON.stringify(d.strategies) === JSON.stringify([row.family]);
+  check(`[${device}] 存成劇本 ${row.symbol} ${row.subtype}：詳細頁頭條＝這一列（${row.candidate_key}），成本 ${money(row.entry_cost)}/股＝${money(row.entry_cost * 100)}/口、最大損失 ${money(row.max_loss_per_contract)}/口、報酬 ${pct}`,
+        out.data_match && Object.values(out.page).every(Boolean), { scenario: out.scenario, page: out.page });
+  return out;
+}
+
+async function phaseResave(ctx, page, device, picks) {
+  const out = { device };
+  out.settings = await setCustomUniverse(page, RESAVE_SYMBOLS, LOOSE.pr, LOOSE.d);
+  const sel = await uiSelected(page);
+  out.selected = sel.symbols;
+  out.saves = [];
+  let rows = null;
+  for (const pick of picks) {
+    rows = await uiSearchRows(page);
+    out.search_rows ??= rows.map(rowView);
+    const row = pick(rows);
+    if (!row) { out.saves.push({ missing: String(pick) }); continue; }
+    out.saves.push(await resaveOne(page, row, device));
+  }
+  return out;
+}
+
 // ---------- persist / UI ----------
 
 async function persistenceSnapshot(page) {
@@ -1084,6 +1185,49 @@ async function main() {
       out.server_totals = { yahoo_http: s.yahoo_http, yahoo_http_status: s.yahoo_http_status,
                             chain_attempts: s.chain_attempts, chain_sources: s.chain_sources,
                             blocked_connections: s.blocked_connections, analyst_fetches: s.analyst_fetches };
+      report.phases = out;
+    } else if (PHASE === "resave") {
+      const out = { head: process.env.OC_409_HEAD ?? null };
+      const byRet = (rs, sym) => [...rs].filter((r) => r.symbol === sym).sort((a, b) => b.target_return - a.target_return);
+      const pickFam = (sym, fam) => Object.assign((rs) => rs.find((r) => r.symbol === sym && r.family === fam),
+                                                  { toString: () => `${sym}/${fam}` });
+      const pickTop = (sym) => Object.assign((rs) => byRet(rs, sym)[0], { toString: () => `${sym}/top` });
+      const picks = [pickFam("DVN", "vertical-spread"), pickFam("DVN", "single-leg"), pickTop("GOOG"),
+                     pickFam("GOOG", "vertical-spread"), pickFam("JPM", "vertical-spread"), pickFam("BAC", "single-leg")];
+      out.desktop = await phaseResave(ctx, page, "desktop 1360x900", picks);
+      // 搜尋排名：與修正前（live409_search_raw.json 的 PR≥50/20% 那一輪）同 4 檔的前 5 比較。
+      const pre = JSON.parse(readFileSync(join(OUT, "live409_search_raw.json"), "utf8")).phases.search_loose.rows
+        .filter((r) => RESAVE_SYMBOLS.includes(r.symbol));
+      const preTop = sortTop5(pre.map((r) => ({ ...r, entry_cost: r.cost_per_share,
+                                                target_return: r.strategy_return_at_target })));
+      const postTop = sortTop5(out.desktop.search_rows.map((r) => ({ ...r, entry_cost: r.cost_per_share,
+                                                                      target_return: r.strategy_return_at_target })));
+      out.ranking = { pre_fix: preTop, post_fix: postTop };
+      for (const id of Object.keys(preTop)) {
+        const same = JSON.stringify(preTop[id]) === JSON.stringify(postTop[id]);
+        check(`排名「${id}」前 5（${RESAVE_SYMBOLS.join("/")}）修正前後完全相同（代號、家族、候選、成本、最大損失、報酬）`, same,
+              { pre: preTop[id].map((x) => `${x.symbol}/${x.family}`), post: postTop[id].map((x) => `${x.symbol}/${x.family}`) });
+      }
+      const preRows = Object.fromEntries(pre.map((r) => [`${r.symbol}|${r.family}`, r]));
+      out.row_diffs = out.desktop.search_rows.map((r) => {
+        const p = preRows[`${r.symbol}|${r.family}`];
+        return { key: `${r.symbol}|${r.family}`, pre: p ? [p.candidate_key, p.cost_per_share, p.max_loss_per_contract, p.strategy_return_at_target] : null,
+                 post: [r.candidate_key, r.cost_per_share, r.max_loss_per_contract, r.strategy_return_at_target] };
+      }).filter((x) => JSON.stringify(x.pre) !== JSON.stringify(x.post));
+      await ctx.close();
+      const iphone = devices["iPhone 13"];
+      ctx = await chromium.launchPersistentContext(join(OUT, "profile-resave-mobile"), {
+        executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined, args: ARGS,
+        ignoreHTTPSErrors: true, viewport: iphone.viewport, deviceScaleFactor: iphone.deviceScaleFactor,
+        isMobile: true, hasTouch: true, userAgent: iphone.userAgent });
+      out.canary_mobile = await canary(ctx, { write: false });
+      const mpage = await ctx.newPage();
+      await mpage.goto(`${BASE}/#/`);
+      check("手機：SU 登入", (await login(mpage)) === "superuser");
+      out.mobile = await phaseResave(ctx, mpage, "iPhone 13 390x844", [pickFam("DVN", "vertical-spread")]);
+      out.mobile.no_hscroll_detail = await noHScroll(mpage);
+      // 掃描股票範圍改回 S&P 500、PR≥80／10%。
+      await setThresholds(mpage, 80, 10);
       report.phases = out;
     } else if (PHASE === "persist") {
       const out = {};
