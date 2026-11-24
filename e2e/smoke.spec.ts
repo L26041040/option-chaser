@@ -1438,7 +1438,7 @@ const SETTINGS_VIEW = {
       { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
     ],
     strategies: ["single-leg", "vertical-spread", "butterfly"],
-    sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },
+    sorts: [{ id: "return", label: "股價達標時的策略報酬（高→低）" },
               { id: "cost", label: "投入成本（低→高）" },
               { id: "max_loss", label: "最大損失（低→高）" }],
     custom_symbols_max: 50,
@@ -1584,12 +1584,13 @@ test("手機版：Super Admin 的「機會搜尋」區塊——恢復預設真�
   const block = page.getByRole("region", { name: "機會搜尋" });
   await expect(block).toBeVisible();
   await expect(block.getByText("大型股樣本（暫定，清單來源待 #382）")).toBeVisible();
-  const percentile = block.getByLabel("分歧度歷史百分位門檻（%）");
-  await percentile.fill("35");
+  // V2-03（#405）：第一道門檻以 PR 輸入；預設 PR ≥ 80 存的仍是原百分位 20。
+  const percentile = block.getByLabel("分歧度歷史排序門檻：PR ≥");
+  await percentile.fill("65");
   await block.getByRole("button", { name: "恢復預設" }).first().click();
 
-  await expect(block.getByRole("status")).toHaveText("已恢復預設（20%）");
-  await expect(percentile).toHaveValue("20");
+  await expect(block.getByRole("status")).toHaveText("已恢復預設（PR ≥ 80）");
+  await expect(percentile).toHaveValue("80");
   expect(puts).toEqual([{
     market_data: { mode: "default", provider: null },
     historical_iv: { mode: "default", provider: null },

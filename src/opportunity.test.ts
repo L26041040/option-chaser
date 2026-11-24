@@ -36,7 +36,7 @@ const ROWS = [
 ];
 
 describe("rankOpportunities", () => {
-  it("return：目標價情境報酬由高到低，同值依 symbol 再 family", () => {
+  it("return：股價達標時的策略報酬由高到低，同值依 symbol 再 family", () => {
     expect(ids(rankOpportunities(ROWS, "return"))).toEqual([
       "AAA/single-leg", "AAA/butterfly", "BBB/vertical-spread", "CCC/butterfly",
     ]);

@@ -11,11 +11,11 @@
  *   拒絕時（409／429）照實顯示後端訊息。
  * - 只在 SU／SA 才會被渲染（`OpportunityPage` 的守門）；每次更新或重試結束
  *   都重讀狀態，並通知頁面重讀共識清單（`onUpdated`）。
- * - LIVE-T5（#401）：區塊頂端是「資料狀態」——資料來源（真實或測試）、資料日、
- *   已建立／母體檔數、入選檔數——與目前的狀態（`dataPhase()`：就緒／建立中／
+ * - LIVE-T5（#401）：區塊頂端是「資料狀態」——資料來源（真實或測試）、資料日期、
+ *   已建立／掃描範圍檔數、符合條件檔數——與目前的狀態（`dataPhase()`：就緒／建立中／
  *   更新失敗／已達今日上限）。每個狀態一句話說下一步，主按鈕跟著狀態換字：
  *   建立中是「開始建立」或「繼續更新」，已達今日上限時停用並說明何時自動更新；
- *   就緒時主要動作是下方入選股的「搜尋選擇權」，這裡的更新鈕退為次要樣式。
+ *   就緒時主要動作是下方符合條件的股票的「搜尋選擇權」，這裡的更新鈕退為次要樣式。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -82,7 +82,7 @@ const PHASE_LABELS: Record<DataPhase["kind"], string> = {
 export default function AnalystUpdatePanel({
   consensus, onUpdated,
 }: {
-  /** 共識清單（頁面已讀好的同一份）：資料來源、母體、已建立與入選檔數。 */
+  /** 共識清單（頁面已讀好的同一份）：資料來源、掃描範圍、已建立與符合條件檔數。 */
   consensus: OpportunityConsensusResponse;
   onUpdated: () => void;
 }) {
@@ -184,9 +184,9 @@ export default function AnalystUpdatePanel({
         <StatusFact label="資料來源">
           {consensus.source.is_fixture ? "測試資料（非真實市場資料）" : "真實分析師資料"}
         </StatusFact>
-        <StatusFact label="資料日">{consensus.universe.as_of ?? data?.data_as_of ?? "—"}</StatusFact>
+        <StatusFact label="資料日期">{consensus.universe.as_of ?? data?.data_as_of ?? "—"}</StatusFact>
         <StatusFact label="已建立">{built}／{total} 檔</StatusFact>
-        <StatusFact label="入選">{selected} 檔</StatusFact>
+        <StatusFact label="符合條件">{selected} 檔</StatusFact>
         {data && <StatusFact label="今日更新">{progressText(data.progress)}</StatusFact>}
         {data && (
           <StatusFact label="今日上游呼叫">
@@ -258,12 +258,12 @@ function phaseText(
   switch (phase.kind) {
     case "ready":
       return selected > 0
-        ? "資料已就緒，可以直接用下方的「搜尋選擇權」搜尋入選股。"
+        ? "資料已就緒，可以直接用下方的「搜尋選擇權」搜尋符合條件的股票。"
         : "資料已就緒，但目前沒有股票同時通過兩道門檻，可以調整門檻後再看。";
     case "building":
       return built === 0
-        ? `資料建立中：母體 ${total} 檔都還沒建立。按「開始建立」抓取分析師資料，建好後才有入選清單。`
-        : `資料建立中：已建立 ${built}／${total} 檔。按「繼續更新」接著建立；已建立的入選股現在就可以搜尋。`;
+        ? `資料建立中：掃描股票範圍內 ${total} 檔都還沒建立。按「開始建立」抓取分析師資料，建好後才知道哪些股票符合條件。`
+        : `資料建立中：已建立 ${built}／${total} 檔。按「繼續更新」接著建立；已建立且符合條件的股票現在就可以搜尋。`;
     case "failed":
       return `${phase.failed} 檔更新失敗：原因與重試方式列在下方。其餘股票照常可以搜尋。`;
     case "rate_limited":

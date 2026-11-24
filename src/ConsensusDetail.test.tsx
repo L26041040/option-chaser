@@ -4,8 +4,9 @@
  * 情境覆寫欄位。
  *
  * 守的事：按下才打詳細資料端點（只打一次、收起再開不重打）；顯示每位券商
- * 的原始目標價、發布日、分割換算後的值；平均／標準差／D／百分位與每月序列、
- * 合格點數；資料不足的原因；明細尚未就緒、錯誤、來源未設定都照實說。
+ * 的原始目標價、發布日、分割換算後的值；平均／標準差／分析師分歧率／分歧度
+ * 歷史排序（PR，V2-03／#405）與每月序列、合格點數；不符合條件時哪一道門檻
+ * 沒過、資料不足的原因；明細尚未就緒、錯誤、來源未設定都照實說。
  */
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -60,16 +61,30 @@ describe("ConsensusDetail：開啟與讀取", () => {
 });
 
 describe("ConsensusDetail：共識怎麼算出來的", () => {
-  it("平均、標準差、D、自身歷史百分位、合格歷史點數", async () => {
+  it("平均、標準差、分析師分歧率、分歧度歷史排序（PR）、合格歷史點數、有效券商數", async () => {
     mockDetail();
     const { panel } = await open();
     const facts = await within(panel).findByRole("list", { name: "共識數值" });
     expect(facts).toHaveTextContent("平均目標價$252.86");
     expect(facts).toHaveTextContent("標準差$71.84");
-    expect(facts).toHaveTextContent("分歧度 D28.4%");
-    expect(facts).toHaveTextContent("自身歷史百分位96.7%");
+    expect(facts).toHaveTextContent("分析師分歧率（標準差 ÷ 平均）28.4%");
+    // 原百分位 96.7% → PR 3.3 → 向下取整 PR3（前 97%）。
+    expect(facts).toHaveTextContent("分歧度歷史排序PR3（前 97%）");
     expect(facts).toHaveTextContent("合格歷史點60 / 60 個月");
-    expect(facts).toHaveTextContent("資料日2026-11-21");
+    expect(facts).toHaveTextContent("有效券商數35");
+    expect(facts).toHaveTextContent("資料日期2026-11-21");
+    // 歷史比較的口徑：60 個月、月底最後一個交易日、至少 24 個有效月份。
+    expect(panel).toHaveTextContent(/過去 60 個月.*最後一個交易日.*24 個有效月份/);
+  });
+
+  it("不符合條件：寫出哪一道門檻沒過（以 PR 與分歧率上限說明）", async () => {
+    mockDetail();
+    const { panel } = await open();
+    const why = await within(panel).findByRole("list", { name: "不符合條件的原因" });
+    expect(within(why).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "分歧度歷史排序 PR3（前 97%），未達門檻 PR ≥ 80",
+      "分析師分歧率 28.4%，高於上限 10%",
+    ]);
   });
 
   it("每位券商一列：券商、目標價、發布日；同券商只列最新一筆", async () => {
@@ -101,31 +116,31 @@ describe("ConsensusDetail：共識怎麼算出來的", () => {
       ? { ...p, qualified: false, reason: "split_unresolved" } : p);
     mockDetail(200, { ...DETAIL, series, qualified_points: 59 });
     const { panel } = await open();
-    const months = await within(panel).findByRole("list", { name: "每月分歧度" });
+    const months = await within(panel).findByRole("list", { name: "每月分析師分歧率" });
     const items = within(months).getAllByRole("listitem");
     expect(items).toHaveLength(60);
     expect(items[0]).toHaveTextContent("2026-10-30");
     expect(items[0]).toHaveTextContent("不計入：股票分割無法判定");
     expect(items[1]).toHaveTextContent("2026-09-30");
     expect(items[1]).toHaveTextContent(/\d+ 位/);
-    expect(items[1]).toHaveTextContent(/D \d+\.\d%/);
-    expect(within(panel).getByText("每月分歧度（合格 59 / 60 個月）")).toBeInTheDocument();
+    expect(items[1]).toHaveTextContent(/分歧率 \d+\.\d%/);
+    expect(within(panel).getByText("每月分析師分歧率（合格 59 / 60 個月）")).toBeInTheDocument();
   });
 });
 
 describe("ConsensusDetail：資料不足與異常", () => {
-  it("資料不足：寫出具體原因，並說明不會入選", async () => {
+  it("資料不足：寫出具體原因，並說明無法判斷是否符合條件", async () => {
     const item = { ...DETAIL.item!, status: "insufficient_analysts" as const,
-                   reasons: ["insufficient_analysts: 有效分析師 1 < N_min 5",
+                   reasons: ["insufficient_analysts: 有效券商數 1 < N_min 5",
                              "stale: 近 90 天更新比例 0.0000 < 0.5"],
                    gate: { first: false, second: false, selected: false, reasons: [] } };
     mockDetail(200, { ...DETAIL, item });
     const { panel } = await open();
-    const why = await within(panel).findByRole("list", { name: "未入選原因" });
+    const why = await within(panel).findByRole("list", { name: "資料不足的原因" });
     expect(within(panel).getByText(/分析師人數不足/)).toBeInTheDocument();
-    expect(why).toHaveTextContent("有效分析師 1 < N_min 5");
+    expect(why).toHaveTextContent("有效券商數 1 < N_min 5");
     expect(why).toHaveTextContent("近 90 天更新比例 0.0000 < 0.5");
-    expect(panel).toHaveTextContent("資料不足的股票不會入選");
+    expect(panel).toHaveTextContent("資料不足，無法判斷是否符合條件");
   });
 
   it("明細尚未就緒：照實說，摘要數字照常", async () => {

@@ -2,13 +2,19 @@
  * OS-05（#394）：機會搜尋頁的純邏輯。只排序、合併既有欄位——每個數字
  * 都是後端（既有引擎）給的原值，這裡不算任何報酬、成本或損失。
  */
-import type { OpportunityRow, OpportunitySearchSettings } from "./api";
+import type {
+  ConsensusItem,
+  OpportunityConsensusResponse,
+  OpportunityRow,
+  OpportunitySearchSettings,
+} from "./api";
+import { prLabel, prThresholdLabel } from "./dispersionRank";
 
 export type OpportunitySort = OpportunitySearchSettings["sort"];
 
 /** 排序鍵：越小越前面。與後端 `opportunity_search._SORT_KEYS` 同一套。 */
 const SORT_KEY: Record<OpportunitySort, (r: OpportunityRow) => number> = {
-  // 目標價情境報酬由高到低（同既有 Scenario Bet Ranking 口徑）。
+  // 股價達標時的策略報酬由高到低（同既有 Scenario Bet Ranking 口徑）。
   return: (r) => -r.target_return,
   cost: (r) => r.entry_cost,
   max_loss: (r) => r.max_loss_per_contract,
@@ -78,4 +84,23 @@ export function ratioPct(x: number | null): string {
 export function reasonText(reason: string): string {
   const at = reason.indexOf(": ");
   return at >= 0 ? reason.slice(at + 2) : reason;
+}
+
+/**
+ * 資料足夠、但不符合條件的股票：哪一道門檻沒過（V2-03／#405）。是否通過
+ * 只看後端的 `gate.first`／`gate.second`（未取整的原值判的），這裡只把
+ * 數字照 #405 的用語寫出來；兩道都過卻沒入選的話（不該發生）退回後端原因。
+ */
+export function gateFailureReasons(
+  item: ConsensusItem,
+  t: OpportunityConsensusResponse["thresholds"],
+): string[] {
+  const out: string[] = [];
+  if (!item.gate.first) {
+    out.push(`分歧度歷史排序 ${prLabel(item.percentile)}，未達門檻 ${prThresholdLabel(t.percentile_max)}`);
+  }
+  if (!item.gate.second) {
+    out.push(`分析師分歧率 ${ratioPct(item.dispersion)}，高於上限 ${t.dispersion_max}%`);
+  }
+  return out.length > 0 ? out : item.gate.reasons.map(reasonText);
 }

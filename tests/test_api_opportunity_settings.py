@@ -66,7 +66,7 @@ def test_view_carries_the_options_the_settings_block_needs(client):
     assert universes["custom"]["label"] == "自訂清單"
     assert options["strategies"] == ["single-leg", "vertical-spread", "butterfly"]
     assert options["sorts"] == [
-        {"id": "return", "label": "目標價情境報酬（高→低）"},
+        {"id": "return", "label": "股價達標時的策略報酬（高→低）"},
         {"id": "cost", "label": "投入成本（低→高）"},
         {"id": "max_loss", "label": "最大損失（低→高）"}]
     assert options["custom_symbols_max"] == 50
@@ -148,7 +148,7 @@ def test_thresholds_reject_out_of_range_and_non_numbers(client, field, bad):
 
 def test_rejected_threshold_carries_a_readable_message(client):
     detail = _put(client, {"percentile_max": 101}).json()["detail"]
-    assert detail[0]["msg"] == "Value error, 分歧度歷史百分位門檻必須介於 0 到 100"
+    assert detail[0]["msg"] == "Value error, 分歧度歷史排序門檻必須介於 0 到 100"
 
 
 def test_empty_strategies_are_rejected(client):

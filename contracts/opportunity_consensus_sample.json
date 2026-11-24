@@ -137,7 +137,7 @@
       "low": 91.0,
       "median_published_on": "2026-09-02",
       "reasons": [
-        "insufficient_analysts: 有效分析師 3 < N_min 5",
+        "insufficient_analysts: 有效券商數 3 < N_min 5",
         "insufficient_history: 合格歷史點 0 < H_min 24"
       ],
       "gate": {
@@ -145,7 +145,7 @@
         "second": false,
         "selected": false,
         "reasons": [
-          "insufficient_analysts: 有效分析師 3 < N_min 5",
+          "insufficient_analysts: 有效券商數 3 < N_min 5",
           "insufficient_history: 合格歷史點 0 < H_min 24"
         ]
       },

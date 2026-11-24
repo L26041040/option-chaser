@@ -564,7 +564,7 @@ def test_example_3_exactly_at_threshold_passes():
 def test_example_4_status_not_ok_fails_both_gates_even_with_tiny_dispersion():
     snap = replace(ok_snapshot(), status="insufficient_analysts",
                    dispersion=Decimal("0.02"), percentile=Decimal(0),
-                   reasons=("insufficient_analysts: 有效分析師 4 < N_min 5",))
+                   reasons=("insufficient_analysts: 有效券商數 4 < N_min 5",))
     g = evaluate_gate(snap, Decimal(1), Decimal(1))
     assert (g.first, g.second, g.selected) == (False, False, False)
     assert any("insufficient_analysts" in r for r in g.reasons)
@@ -646,7 +646,7 @@ def test_expired_target_can_push_a_stock_below_n_min():
     snap = compute_snapshot(records, [], AS_OF)
     assert snap.n_analysts == 4
     assert snap.status == "insufficient_analysts"
-    assert snap.reasons[0] == "insufficient_analysts: 有效分析師 4 < N_min 5"
+    assert snap.reasons[0] == "insufficient_analysts: 有效券商數 4 < N_min 5"
 
 
 def test_result_does_not_depend_on_the_callers_decimal_context():

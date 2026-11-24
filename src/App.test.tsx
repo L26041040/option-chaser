@@ -2045,7 +2045,7 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
           // OS-02（#391）：Super Admin 的設定頁也掛著機會搜尋區塊。
           opportunity_search: OPP_DEFAULTS,
           opportunity_search_options: {
-            universes: [], strategies: [], sorts: [{ id: "return", label: "目標價情境報酬（高→低）" }],
+            universes: [], strategies: [], sorts: [{ id: "return", label: "股價達標時的策略報酬（高→低）" }],
             custom_symbols_max: 50, defaults: OPP_DEFAULTS,
           },
         }) };

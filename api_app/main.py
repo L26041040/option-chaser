@@ -4138,7 +4138,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             if outside:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"這些代號不在目前的入選清單：{'、'.join(outside)}")
+                    detail=f"這些代號不在目前符合條件的股票中：{'、'.join(outside)}")
         # 超過單次上限的檔不丟掉、也不自動續跑（那會繞過上限）：放進
         # `deferred` 交回去，使用者明確再發一次搜尋才處理（#389 §8）。
         cap = _effective_opportunity_fetch_cap

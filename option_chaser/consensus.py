@@ -515,7 +515,7 @@ def compute_snapshot(records: Iterable[AnalystTargetRecord],
         found["split_unresolved"] = suspects
         if today.n < rules.n_min:
             found["insufficient_analysts"].append(
-                f"insufficient_analysts: 有效分析師 {today.n} < N_min {rules.n_min}")
+                f"insufficient_analysts: 有效券商數 {today.n} < N_min {rules.n_min}")
         if freshness is not None and freshness < rules.freshness_min_share:
             found["stale"].append(
                 f"stale: 近 {rules.freshness_days} 天更新比例 {freshness:.4f}"

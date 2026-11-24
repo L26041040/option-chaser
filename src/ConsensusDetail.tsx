@@ -2,8 +2,9 @@
  * 個股共識詳細資料（LIVE-T2／#399）：機會搜尋頁共識清單每一列的「詳細資料」。
  *
  * 讓使用者看到共識是怎麼算出來的——目前有效的個別券商目標價（原始值、發布
- * 日、分割換算後的值）、平均／標準差／D／自身歷史百分位、每月 D 序列與合格
- * 點數、資料不足的具體原因。數字全是後端原值（`GET /api/opportunity/
+ * 日、分割換算後的值）、平均／標準差／分析師分歧率／分歧度歷史排序（PR，
+ * V2-03／#405）、每月分析師分歧率序列與合格點數、資料不足或不符合條件的
+ * 具體原因。數字全是後端原值（`GET /api/opportunity/
  * consensus-detail/{symbol}`，只讀全站快取），這裡只格式化。
  *
  * - 收合時不打端點；第一次打開才讀，之後收起再開沿用同一份（不重打）。
@@ -19,7 +20,8 @@ import {
   type ConsensusSeriesPoint,
   type OpportunityConsensusDetail,
 } from "./api";
-import { ratioPct, reasonText, STATUS_LABELS } from "./opportunity";
+import { PR_HISTORY_EXPLAINER, prLabel } from "./dispersionRank";
+import { gateFailureReasons, ratioPct, reasonText, STATUS_LABELS } from "./opportunity";
 import { money } from "./scenarios";
 
 type Load =
@@ -104,7 +106,8 @@ function DetailBody({ data }: { data: OpportunityConsensusDetail }) {
   return (
     <>
       <Facts item={item} data={data} />
-      <Why item={item} />
+      <FactsNote />
+      <Why item={item} thresholds={data.thresholds} />
       {data.detail_available ? (
         <>
           <Effective rows={data.effective} />
@@ -134,27 +137,36 @@ function Facts({ item, data }: { item: ConsensusItem; data: OpportunityConsensus
     <ul className="opp-detail-facts" aria-label="共識數值">
       <Fact label="平均目標價" value={moneyOrDash(item.mean)} />
       <Fact label="標準差" value={moneyOrDash(item.stdev)} />
-      <Fact label="分歧度 D" value={ratioPct(item.dispersion)} />
-      <Fact label="自身歷史百分位" value={ratioPct(item.percentile)} />
+      <Fact label="分析師分歧率（標準差 ÷ 平均）" value={ratioPct(item.dispersion)} />
+      <Fact label="分歧度歷史排序" value={prLabel(item.percentile)} />
       <Fact
         label="合格歷史點"
         value={months === null ? `${item.history_points}` : `${item.history_points} / ${months} 個月`}
       />
-      <Fact label="有效分析師" value={`${item.n_analysts} 位`} />
-      <Fact label="資料日" value={item.as_of ?? "—"} />
+      <Fact label="有效券商數" value={`${item.n_analysts}`} />
+      <Fact label="資料日期" value={item.as_of ?? "—"} />
     </ul>
   );
 }
 
-function Why({ item }: { item: ConsensusItem }) {
+function FactsNote() {
+  return <p className="caption">{PR_HISTORY_EXPLAINER}</p>;
+}
+
+function Why({
+  item, thresholds,
+}: {
+  item: ConsensusItem;
+  thresholds: OpportunityConsensusDetail["thresholds"];
+}) {
   if (item.gate.selected) return null;
   if (item.status !== "ok") {
     return (
       <div className="opp-detail-why">
         <p className="caption">
-          {STATUS_LABELS[item.status] ?? item.status}：資料不足的股票不會入選。
+          {STATUS_LABELS[item.status] ?? item.status}：資料不足，無法判斷是否符合條件。
         </p>
-        <ul className="opp-reasons" aria-label="未入選原因">
+        <ul className="opp-reasons" aria-label="資料不足的原因">
           {item.reasons.map((r, i) => <li key={i}>{reasonText(r)}</li>)}
         </ul>
       </div>
@@ -162,9 +174,9 @@ function Why({ item }: { item: ConsensusItem }) {
   }
   return (
     <div className="opp-detail-why">
-      <p className="caption">資料足夠，但沒通過門檻。</p>
-      <ul className="opp-reasons" aria-label="未入選原因">
-        {item.gate.reasons.map((r, i) => <li key={i}>{reasonText(r)}</li>)}
+      <p className="caption">不符合條件：</p>
+      <ul className="opp-reasons" aria-label="不符合條件的原因">
+        {gateFailureReasons(item, thresholds).map((r, i) => <li key={i}>{r}</li>)}
       </ul>
     </div>
   );
@@ -201,14 +213,14 @@ function Series({ points, qualified }: { points: ConsensusSeriesPoint[]; qualifi
   return (
     <div className="opp-detail-block">
       <h3 className="opp-detail-title">
-        每月分歧度（合格 {qualified} / {points.length} 個月）
+        每月分析師分歧率（合格 {qualified} / {points.length} 個月）
       </h3>
-      <ol className="opp-detail-series" aria-label="每月分歧度">
+      <ol className="opp-detail-series" aria-label="每月分析師分歧率">
         {newestFirst.map((p) => (
           <li key={p.on} className={p.qualified ? undefined : "muted"}>
             <span className="num">{p.on}</span>
             <span className="num">{p.n_analysts} 位</span>
-            <span className="num">D {ratioPct(p.dispersion)}</span>
+            <span className="num">分歧率 {ratioPct(p.dispersion)}</span>
             {!p.qualified && (
               <span>不計入：{STATUS_LABELS[p.reason ?? ""] ?? p.reason}</span>
             )}

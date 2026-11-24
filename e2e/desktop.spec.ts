@@ -1325,7 +1325,7 @@ const settingsView = {
       { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
     ],
     strategies: ["single-leg", "vertical-spread", "butterfly"],
-    sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },
+    sorts: [{ id: "return", label: "股價達標時的策略報酬（高→低）" },
               { id: "cost", label: "投入成本（低→高）" },
               { id: "max_loss", label: "最大損失（低→高）" }],
     custom_symbols_max: 50,

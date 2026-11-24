@@ -165,7 +165,7 @@
   "sort_options": [
     {
       "id": "return",
-      "label": "目標價情境報酬（高→低）"
+      "label": "股價達標時的策略報酬（高→低）"
     },
     {
       "id": "cost",

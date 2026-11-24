@@ -119,7 +119,7 @@ describe("OpportunityPage：權限", () => {
 
   it.each(["superuser", "superadmin"] as const)("%s 看得到共識清單", async (role) => {
     await renderReady({ role });
-    expect(await screen.findByRole("region", { name: "入選股" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "符合條件的股票" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#/opportunity");
   });
 
@@ -129,7 +129,7 @@ describe("OpportunityPage：權限", () => {
     render(<OpportunityPage onSaveAsScenario={vi.fn(noSave)} />);
     expect(await screen.findByRole("alert"))
       .toHaveTextContent("機會搜尋目前只開放 Super User／Super Admin");
-    expect(screen.queryByRole("region", { name: "入選股" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "符合條件的股票" })).not.toBeInTheDocument();
   });
 });
 
@@ -149,9 +149,9 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
     expect(within(header).getByText("測試資料，非真實市場資料")).toBeInTheDocument();
   });
 
-  it("母體資訊：名稱、有資料／資料不足檔數、as_of、覆蓋率警示；門檻連到設定頁", async () => {
+  it("掃描股票範圍資訊：名稱、有資料／資料不足檔數、as_of、覆蓋率警示；門檻連到設定頁", async () => {
     await renderReady();
-    const universe = await screen.findByRole("region", { name: "搜尋母體" });
+    const universe = await screen.findByRole("region", { name: "掃描股票範圍" });
     expect(universe).toHaveTextContent("自訂清單");
     expect(universe).toHaveTextContent("共 7 檔");
     expect(universe).toHaveTextContent("有資料 5 檔");
@@ -159,37 +159,42 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
     expect(universe).toHaveTextContent("2026-09-28");
     // coverage：partial 2 ＋ unknown 2
     expect(universe).toHaveTextContent("4 檔分析師覆蓋不完整");
-    expect(universe).toHaveTextContent("分歧度歷史百分位 ≤ 20%");
-    expect(universe).not.toHaveTextContent("共識百分位");
-    expect(universe).toHaveTextContent("分歧度 ≤ 10%");
+    expect(universe).toHaveTextContent("資料日期 2026-09-28");
+    // 第一道門檻以 PR 顯示（V2-03／#405）：已存的 20 ↔ PR ≥ 80。
+    expect(universe).toHaveTextContent("分歧度歷史排序 PR ≥ 80");
+    expect(universe).not.toHaveTextContent("百分位");
+    expect(universe).toHaveTextContent("分析師分歧率 ≤ 10%");
     expect(within(universe).getByRole("link", { name: "調整門檻" }))
       .toHaveAttribute("href", "#/settings/opportunity");
   });
 
-  it("入選股逐檔顯示 mean、n、dispersion、percentile、歷史點數、as_of", async () => {
+  it("符合條件的股票逐檔顯示 mean、有效券商數、分析師分歧率、分歧度歷史排序（PR）、歷史點數、資料日期", async () => {
     await renderReady();
-    const selected = await screen.findByRole("region", { name: "入選股" });
+    const selected = await screen.findByRole("region", { name: "符合條件的股票" });
     const aaa = within(selected).getByRole("listitem", { name: "AAA" });
     expect(aaa).toHaveTextContent("$120.00");
-    expect(aaa).toHaveTextContent("7 位分析師");
-    expect(aaa).toHaveTextContent("分歧度 9.0%");
-    expect(aaa).toHaveTextContent("百分位 13.6%");
+    expect(aaa).toHaveTextContent("有效券商數 7");
+    expect(aaa).toHaveTextContent("分析師分歧率 9.0%");
+    // 原百分位 13.6% → PR 86.4 → 向下取整 PR86（前 14%）。
+    expect(aaa).toHaveTextContent("分歧度歷史排序 PR86（前 14%）");
     expect(aaa).toHaveTextContent("44 個歷史點");
-    expect(aaa).toHaveTextContent("2026-09-28");
+    expect(aaa).toHaveTextContent("資料日期 2026-09-28");
     expect(within(selected).getByRole("listitem", { name: "EEE" })).toBeInTheDocument();
     expect(within(selected).queryByRole("listitem", { name: "BBB" })).not.toBeInTheDocument();
   });
 
-  it("未入選股把「共識不夠」與「資料不足」分開，並顯示原因", async () => {
+  it("不符合條件與資料不足分開列，不符合條件的附上哪一道門檻沒過", async () => {
     await renderReady();
-    const weak = await screen.findByRole("region", { name: "共識不夠" });
+    const weak = await screen.findByRole("region", { name: "不符合條件" });
     expect(within(weak).getByRole("listitem", { name: "BBB" }))
-      .toHaveTextContent("分歧度 15.1% 高於門檻 10%");
+      .toHaveTextContent("分析師分歧率 15.1%，高於上限 10%");
+    expect(within(weak).getByRole("listitem", { name: "BBB" }))
+      .not.toHaveTextContent("分歧度歷史排序");
     expect(within(weak).getByRole("listitem", { name: "CCC" }))
-      .toHaveTextContent("百分位 100.0% 高於門檻 20%");
+      .toHaveTextContent("分歧度歷史排序 PR0（前 100%），未達門檻 PR ≥ 80");
     const thin = screen.getByRole("region", { name: "資料不足" });
     expect(within(thin).getByRole("listitem", { name: "DDD" }))
-      .toHaveTextContent("有效分析師 3 < N_min 5");
+      .toHaveTextContent("有效券商數 3 < N_min 5");
     expect(within(thin).getByRole("listitem", { name: "FFF" }))
       .toHaveTextContent("來源僅有共識值，沒有個別目標價");
     expect(within(thin).getByRole("listitem", { name: "GGG" })).toHaveTextContent("來源失敗");
@@ -211,19 +216,19 @@ describe("OpportunityPage：資料建立中（LIVE-T4／#400）", () => {
     items: CONSENSUS.items.map(notBuiltItem),
   };
 
-  it("一檔都還沒建立：顯示「資料建立中」，不顯示「沒有入選股」的空結果，搜尋按鈕停用", async () => {
+  it("一檔都還沒建立：顯示「資料建立中」，不顯示「沒有符合條件的股票」的空結果，搜尋按鈕停用", async () => {
     const { spy } = await renderReady({ consensus: { status: 200, body: NOT_BUILT } });
-    const selected = await screen.findByRole("region", { name: "入選股" });
+    const selected = await screen.findByRole("region", { name: "符合條件的股票" });
     expect(selected).toHaveTextContent("資料建立中");
     expect(selected).toHaveTextContent("7 檔");
     expect(selected).not.toHaveTextContent("目前沒有同時通過兩道門檻的股票");
-    expect(selected).not.toHaveTextContent("沒有入選股");
+    expect(selected).not.toHaveTextContent("沒有符合條件的股票");
     expect(screen.queryByRole("region", { name: "資料不足" })).not.toBeInTheDocument();
     expect(within(selected).getByRole("button", { name: "搜尋選擇權" })).toBeDisabled();
     expect(callsTo(spy, "/api/opportunity/search")).toEqual([]);
   });
 
-  it("部分建立：照常列出入選股，並說明還有幾檔在建立中、清單可能不完整", async () => {
+  it("部分建立：照常列出符合條件的股票，並說明還有幾檔在建立中、清單可能不完整", async () => {
     const partial: OpportunityConsensusResponse = {
       ...CONSENSUS,
       universe: { ...CONSENSUS.universe, not_built: 2 },
@@ -231,7 +236,7 @@ describe("OpportunityPage：資料建立中（LIVE-T4／#400）", () => {
         ["FFF", "GGG"].includes(i.symbol) ? notBuiltItem(i) : i),
     };
     await renderReady({ consensus: { status: 200, body: partial } });
-    const selected = await screen.findByRole("region", { name: "入選股" });
+    const selected = await screen.findByRole("region", { name: "符合條件的股票" });
     expect(within(selected).getByRole("listitem", { name: "AAA" })).toBeInTheDocument();
     expect(selected).toHaveTextContent("資料建立中：還有 2 檔尚未建立");
     expect(within(selected).getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
@@ -239,19 +244,19 @@ describe("OpportunityPage：資料建立中（LIVE-T4／#400）", () => {
 
   it("全部建立後不出現「資料建立中」", async () => {
     await renderReady();
-    const selected = await screen.findByRole("region", { name: "入選股" });
+    const selected = await screen.findByRole("region", { name: "符合條件的股票" });
     await within(selected).findByRole("listitem", { name: "AAA" });
     expect(screen.queryByText(/資料建立中/)).not.toBeInTheDocument();
   });
 });
 
 describe("OpportunityPage：個股詳細資料（LIVE-T2／#399）", () => {
-  it("入選與未入選的每一列都能打開詳細資料；按下才讀那一檔", async () => {
+  it("符合、不符合條件與資料不足的每一列都能打開詳細資料；按下才讀那一檔", async () => {
     const user = userEvent.setup();
     const { spy } = await renderReady();
-    const selected = await screen.findByRole("region", { name: "入選股" });
+    const selected = await screen.findByRole("region", { name: "符合條件的股票" });
     const thin = screen.getByRole("region", { name: "資料不足" });
-    const weak = screen.getByRole("region", { name: "共識不夠" });
+    const weak = screen.getByRole("region", { name: "不符合條件" });
     for (const [region, symbol] of [[selected, "AAA"], [weak, "BBB"], [thin, "DDD"]] as const) {
       expect(within(region).getByRole("button", { name: `${symbol} 詳細資料` }))
         .toBeInTheDocument();
@@ -259,7 +264,7 @@ describe("OpportunityPage：個股詳細資料（LIVE-T2／#399）", () => {
     expect(callsTo(spy, "/api/opportunity/consensus-detail/")).toHaveLength(0);
     await user.click(within(thin).getByRole("button", { name: "DDD 詳細資料" }));
     const panel = await within(thin).findByRole("region", { name: "DDD 共識明細" });
-    expect(await within(panel).findByRole("list", { name: "每月分歧度" })).toBeInTheDocument();
+    expect(await within(panel).findByRole("list", { name: "每月分析師分歧率" })).toBeInTheDocument();
     expect(callsTo(spy, "/api/opportunity/consensus-detail/").map(([u]) => String(u)))
       .toEqual(["/api/opportunity/consensus-detail/DDD"]);
   });
@@ -476,7 +481,7 @@ describe("OpportunityPage：搜尋與續跑", () => {
 });
 
 describe("OpportunityPage：文案", () => {
-  it("固定一句條件情境報酬說明；不出現期望報酬、預期獲利，勝率只出現在那句否定說明裡", async () => {
+  it("固定一句策略報酬說明；不出現期望報酬、預期獲利，勝率只出現在那句否定說明裡", async () => {
     await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
     await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
     const results = await screen.findByRole("region", { name: "搜尋結果" });
@@ -485,7 +490,7 @@ describe("OpportunityPage：文案", () => {
     const row = within(results).getByRole("row", { name: /^AAA Long Call/ });
     await userEvent.click(within(row).getByRole("button", { name: "AAA 共識詳細資料" }));
     await within(results).findByRole("list", { name: "共識數值" });
-    const disclaimer = "此報酬是『分析師平均目標價在目標月份成立時』的條件情境報酬，不是期望值或勝率";
+    const disclaimer = "此報酬是『股價在目標月份達到分析師平均目標價時』的策略報酬，不是期望值或勝率";
     expect(screen.getByText(disclaimer)).toBeInTheDocument();
     const text = document.body.textContent ?? "";
     expect(text).not.toMatch(/期望報酬|預期獲利/);

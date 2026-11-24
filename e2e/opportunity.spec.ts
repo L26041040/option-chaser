@@ -3,7 +3,7 @@
  * project 都跑這一份（`playwright.config.ts`）。API 全部以 route 攔截回
  * `contracts/` 的後端樣本——不打任何真實後端。
  *
- * 主流程：從導覽進頁 → 看到入選清單 → 搜尋 → 結果逐檔出現（第二檔是
+ * 主流程：從導覽進頁 → 看到符合條件的股票 → 搜尋 → 結果逐檔出現（第二檔是
  * 續跑回來的）→ 切換排序 → 存成劇本 → 進詳細頁；另測來源未設定、
  * 後端 403、Normal 直接打網址，以及兩種寬度都沒有水平捲動。
  */
@@ -73,7 +73,7 @@ async function openFromNav(page: Page) {
   await expect(page.getByRole("heading", { name: "機會搜尋" })).toBeVisible();
 }
 
-test("SU：導覽進頁 → 入選清單 → 搜尋（續跑）→ 切換排序 → 存成劇本 → 詳細頁", async ({ page }) => {
+test("SU：導覽進頁 → 符合條件的股票 → 搜尋（續跑）→ 切換排序 → 存成劇本 → 詳細頁", async ({ page }) => {
   await routeBase(page, "superuser");
   await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
   const bodies = await routeSearch(page);
@@ -95,10 +95,10 @@ test("SU：導覽進頁 → 入選清單 → 搜尋（續跑）→ 切換排序 
   // 測試資料標示常駐頁首。
   await expect(page.getByRole("banner", { name: "機會搜尋頁首" })
     .getByText("測試資料，非真實市場資料")).toBeVisible();
-  const selected = page.getByRole("region", { name: "入選股" });
+  const selected = page.getByRole("region", { name: "符合條件的股票" });
   await expect(selected.getByRole("listitem", { name: "AAA" })).toBeVisible();
   await expect(selected.getByRole("listitem", { name: "EEE" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "共識不夠" })
+  await expect(page.getByRole("region", { name: "不符合條件" })
     .getByRole("listitem", { name: "BBB" })).toBeVisible();
   await expect(page.getByRole("region", { name: "資料不足" })
     .getByRole("listitem", { name: "DDD" })).toBeVisible();
@@ -112,7 +112,7 @@ test("SU：導覽進頁 → 入選清單 → 搜尋（續跑）→ 切換排序 
     .getByRole("listitem", { name: "EEE" })).toContainText("抓不到報價");
   expect(bodies).toEqual([{}, { symbols: ["EEE"] }]);
   await expect(page.getByText(
-    "此報酬是『分析師平均目標價在目標月份成立時』的條件情境報酬，不是期望值或勝率")).toBeVisible();
+    "此報酬是『股價在目標月份達到分析師平均目標價時』的策略報酬，不是期望值或勝率")).toBeVisible();
 
   const families = () => results.locator("tbody tr").evaluateAll(
     (rows) => rows.map((r) => r.getAttribute("data-family")));
@@ -162,7 +162,7 @@ test("超過單次上限：顯示尚有幾檔未搜尋，按鈕對那些檔發�
   await expect(page.getByText("已搜尋 2 / 2 檔")).toBeVisible();
 });
 
-test("個股詳細資料（#399）：入選與資料不足的列都能打開，有效目標價與每月序列，無水平捲動", async ({ page }) => {
+test("個股詳細資料（#399）：符合條件與資料不足的列都能打開，有效目標價與每月序列，無水平捲動", async ({ page }) => {
   await routeBase(page, "superuser");
   await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
   const asked: string[] = [];
@@ -173,16 +173,16 @@ test("個股詳細資料（#399）：入選與資料不足的列都能打開，�
   });
 
   await page.goto("/#/opportunity");
-  const selected = page.getByRole("region", { name: "入選股" });
+  const selected = page.getByRole("region", { name: "符合條件的股票" });
   await selected.getByRole("button", { name: "AAA 詳細資料" }).click();
   const panel = selected.getByRole("region", { name: "AAA 共識明細" });
   await expect(panel.getByRole("list", { name: "共識數值" })).toContainText("平均目標價$252.86");
   const targets = panel.getByRole("list", { name: /^有效目標價/ });
   await expect(targets.getByRole("listitem")).toHaveCount(detail.effective.length);
   await expect(targets.getByRole("listitem", { name: "Bernstein" })).toContainText("$200.00");
-  await expect(panel.getByRole("list", { name: "每月分歧度" }).getByRole("listitem"))
+  await expect(panel.getByRole("list", { name: "每月分析師分歧率" }).getByRole("listitem"))
     .toHaveCount(detail.series.length);
-  await expect(panel.getByText(`每月分歧度（合格 ${detail.qualified_points} / ${detail.series.length} 個月）`))
+  await expect(panel.getByText(`每月分析師分歧率（合格 ${detail.qualified_points} / ${detail.series.length} 個月）`))
     .toBeVisible();
   await noHorizontalScroll(page);
 
@@ -237,7 +237,7 @@ test("後端拒絕（403）：照實顯示後端訊息，沒有清單也沒有�
   await page.goto("/#/opportunity");
   await expect(page.getByRole("alert"))
     .toContainText("機會搜尋目前只開放 Super User／Super Admin");
-  await expect(page.getByRole("region", { name: "入選股" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "符合條件的股票" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "搜尋選擇權" })).toHaveCount(0);
 });
 
@@ -288,7 +288,7 @@ test("SU：更新分析師資料依 remaining 自動續跑到完；冷卻中的�
   const facts = panel.getByRole("list", { name: "資料狀態" });
   await expect(facts.getByRole("listitem", { name: "今日更新" }))
     .toContainText("已完成 24／57 檔、失敗 1 檔");
-  await expect(facts.getByRole("listitem", { name: "資料日" })).toContainText("2026-09-28");
+  await expect(facts.getByRole("listitem", { name: "資料日期" })).toContainText("2026-09-28");
   await noHorizontalScroll(page);
 
   await panel.getByRole("button", { name: "更新分析師資料" }).click();
@@ -339,7 +339,7 @@ test("SU：每日上限時更新停下並說明原因；後端拒絕重試時在
 
 const REAL = { ...consensus, source: { configured: true, name: "yahoo-udh", is_fixture: false } };
 
-/** 母體中 `symbols` 這幾檔還沒建立（後端 `not_built` 的同一判準）。 */
+/** 掃描範圍中 `symbols` 這幾檔還沒建立（後端 `not_built` 的同一判準）。 */
 function building(base: any, symbols: string[]) {
   return {
     ...base,
@@ -407,9 +407,9 @@ test("SU（#401）：進頁看到資料狀態 → 繼續更新看到進度 → �
   const facts = panel.getByRole("list", { name: "資料狀態" });
   await expect(panel.getByRole("heading", { name: /^分析師資料/ })).toContainText("建立中");
   await expect(facts.getByRole("listitem", { name: "資料來源" })).toContainText("真實分析師資料");
-  await expect(facts.getByRole("listitem", { name: "資料日" })).toContainText("2026-09-28");
+  await expect(facts.getByRole("listitem", { name: "資料日期" })).toContainText("2026-09-28");
   await expect(facts.getByRole("listitem", { name: "已建立" })).toContainText("3／7 檔");
-  await expect(facts.getByRole("listitem", { name: "入選" })).toContainText("1 檔");
+  await expect(facts.getByRole("listitem", { name: "符合條件" })).toContainText("1 檔");
   await expect(panel.getByRole("status")).toContainText("資料建立中：已建立 3／7 檔");
   await expect(page.getByText("測試資料，非真實市場資料")).toHaveCount(0);
   await noHorizontalScroll(page);
@@ -426,9 +426,9 @@ test("SU（#401）：進頁看到資料狀態 → 繼續更新看到進度 → �
   // 建好：就緒，直接搜尋選擇權。
   await expect(panel.getByRole("heading", { name: /^分析師資料/ })).toContainText("就緒");
   await expect(facts.getByRole("listitem", { name: "已建立" })).toContainText("6／7 檔");
-  await expect(facts.getByRole("listitem", { name: "入選" })).toContainText("2 檔");
+  await expect(facts.getByRole("listitem", { name: "符合條件" })).toContainText("2 檔");
   await expect(panel.getByRole("status"))
-    .toContainText("資料已就緒，可以直接用下方的「搜尋選擇權」搜尋入選股。");
+    .toContainText("資料已就緒，可以直接用下方的「搜尋選擇權」搜尋符合條件的股票。");
   await page.getByRole("button", { name: "搜尋選擇權" }).click();
   const results = page.getByRole("region", { name: "搜尋結果" });
   await expect(results.getByRole("row", { name: /^AAA / })).toHaveCount(3);
@@ -450,7 +450,7 @@ test("SU（#401）：進頁看到資料狀態 → 繼續更新看到進度 → �
   await longCall.getByRole("button", { name: "AAA 共識詳細資料" }).click();
   const detailPanel = results.getByRole("region", { name: "AAA 共識明細" });
   await expect(detailPanel.getByRole("list", { name: "共識數值" })).toContainText("平均目標價$252.86");
-  await expect(detailPanel.getByRole("list", { name: "每月分歧度" }).getByRole("listitem"))
+  await expect(detailPanel.getByRole("list", { name: "每月分析師分歧率" }).getByRole("listitem"))
     .toHaveCount(detail.series.length);
   await expect(detailPanel).toBeVisible();
   await noHorizontalScroll(page);

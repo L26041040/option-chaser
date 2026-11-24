@@ -112,7 +112,7 @@ describe("分析師資料：權限", () => {
   it.each(["superuser", "superadmin"] as const)("%s 看得到狀態與更新按鈕", async (role) => {
     const { panel } = await renderPanel({ role });
     const facts = within(panel).getByRole("list", { name: "資料狀態" });
-    expect(within(facts).getByRole("listitem", { name: "資料日" })).toHaveTextContent("2026-09-28");
+    expect(within(facts).getByRole("listitem", { name: "資料日期" })).toHaveTextContent("2026-09-28");
     expect(within(facts).getByRole("listitem", { name: "今日更新" }))
       .toHaveTextContent("已完成 24／57 檔、失敗 1 檔");
     expect(within(facts).getByRole("listitem", { name: "今日上游呼叫" }))
@@ -254,7 +254,7 @@ const ALL_DONE: ConsensusRefreshStatusResponse = {
 const REAL: OpportunityConsensusResponse = {
   ...CONSENSUS, source: { configured: true, name: "yahoo-udh", is_fixture: false },
 };
-/** 母體 7 檔中 `symbols` 這幾檔還沒建立（後端 `not_built` 的同一判準）。 */
+/** 掃描範圍 7 檔中 `symbols` 這幾檔還沒建立（後端 `not_built` 的同一判準）。 */
 function building(base: OpportunityConsensusResponse, symbols: string[]): OpportunityConsensusResponse {
   const items = base.items.map((i) => symbols.includes(i.symbol)
     ? { ...i, status: "no_data" as const, mean: null, dispersion: null, percentile: null,
@@ -269,16 +269,16 @@ const fact = (panel: HTMLElement, name: string) =>
   within(within(panel).getByRole("list", { name: "資料狀態" })).getByRole("listitem", { name });
 
 describe("資料狀態（LIVE-T5／#401）", () => {
-  it("就緒：顯示真實來源、資料日、已建立／母體、入選檔數；直接「搜尋選擇權」會真的搜尋", async () => {
+  it("就緒：顯示真實來源、資料日期、已建立／掃描範圍、符合條件檔數；直接「搜尋選擇權」會真的搜尋", async () => {
     const { spy, panel } = await renderPanel({ consensus: [REAL],
                                                status: [{ status: 200, body: ALL_DONE }] });
     expect(phaseTag(panel)).toHaveTextContent("就緒");
     expect(fact(panel, "資料來源")).toHaveTextContent("真實分析師資料");
-    expect(fact(panel, "資料日")).toHaveTextContent("2026-09-28");
+    expect(fact(panel, "資料日期")).toHaveTextContent("2026-09-28");
     expect(fact(panel, "已建立")).toHaveTextContent("6／7 檔");   // GGG 抓取失敗不算
-    expect(fact(panel, "入選")).toHaveTextContent("2 檔");
+    expect(fact(panel, "符合條件")).toHaveTextContent("2 檔");
     expect(within(panel).getByRole("status"))
-      .toHaveTextContent("資料已就緒，可以直接用下方的「搜尋選擇權」搜尋入選股。");
+      .toHaveTextContent("資料已就緒，可以直接用下方的「搜尋選擇權」搜尋符合條件的股票。");
     expect(screen.queryByText("測試資料，非真實市場資料")).not.toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeEnabled();
 
@@ -303,7 +303,7 @@ describe("資料狀態（LIVE-T5／#401）", () => {
                { status: 200, body: ALL_DONE }] });
     expect(phaseTag(panel)).toHaveTextContent("建立中");
     expect(fact(panel, "已建立")).toHaveTextContent("0／7 檔");
-    expect(within(panel).getByRole("status")).toHaveTextContent("母體 7 檔都還沒建立");
+    expect(within(panel).getByRole("status")).toHaveTextContent("掃描股票範圍內 7 檔都還沒建立");
     expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeDisabled();
 
     await userEvent.click(within(panel).getByRole("button", { name: "開始建立" }));
@@ -337,8 +337,8 @@ describe("資料狀態（LIVE-T5／#401）", () => {
     expect(phaseTag(panel)).toHaveTextContent("建立中");
     expect(fact(panel, "已建立")).toHaveTextContent("4／7 檔");
     expect(within(panel).getByRole("status")).toHaveTextContent(
-      "資料建立中：已建立 4／7 檔。按「繼續更新」接著建立；已建立的入選股現在就可以搜尋。");
-    // 已建立的入選股（AAA、EEE）照常可以搜尋。
+      "資料建立中：已建立 4／7 檔。按「繼續更新」接著建立；已建立且符合條件的股票現在就可以搜尋。");
+    // 已建立且符合條件的股票（AAA、EEE）照常可以搜尋。
     expect(screen.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
 
     await userEvent.click(within(panel).getByRole("button", { name: "繼續更新" }));

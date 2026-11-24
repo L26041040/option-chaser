@@ -1,7 +1,7 @@
 /**
  * 機會搜尋頁（OS-05／#394，母票 #389 §5.3–5.4、C13–C14）。
  *
- * 共識清單（只讀全站共識快取）→「搜尋選擇權」對入選股逐檔跑**既有**
+ * 共識清單（只讀全站共識快取）→「搜尋選擇權」對符合條件的股票逐檔跑**既有**
  * 引擎（`POST /api/opportunity/search`，一次一檔、依 `remaining` 續跑）→
  * 前端跨標的排序（`rankOpportunities()`）→ 任一列「存成劇本」走既有建立
  * 劇本流程（`onSaveAsScenario`，App 的同一條 create＋refresh 路徑）。
@@ -27,13 +27,15 @@
  *   每股＝`max_loss_per_contract / 100`（後端欄位是每口、100 股；既有詳細頁
  *   的 Max Loss 也是這樣 ÷100 顯示），存成劇本後詳細頁與這一列是同一個數字。
  *   排序仍用後端的每口原值（÷100 是單調的，順序不變）。
- * - 文案只說「目標價情境報酬」，並固定一句它不是期望值或勝率。
+ * - 文案只說「股價達標時的策略報酬」，並固定一句它不是期望值或勝率。
+ * - 用語照 #405（V2-03）的定稿對照表；「分歧度歷史排序」以 PR 顯示
+ *   （`dispersionRank.ts`，向下取整），篩選仍只看後端的 `gate`。
  * - 來源已設定時，頁首下方是「分析師資料」區塊（`AnalystUpdatePanel`，
  *   LIVE-T3／#398）：更新／重試結束後重讀共識清單。
  * - 共識資料還沒建立（`universe.not_built`，LIVE-T4／#400）：一檔都還沒建立
- *   時入選股區塊只說「資料建立中」、搜尋停用——不顯示「沒有入選股」的空
+ *   時「符合條件的股票」區塊只說「資料建立中」、搜尋停用——不顯示「沒有符合條件的股票」的空
  *   結果；部分建立時照常列出並說明還有幾檔在建立中。
- * - 資料狀態（來源、資料日、已建立／母體、入選）與就緒／建立中／失敗的下一步
+ * - 資料狀態（來源、資料日期、已建立／掃描範圍、符合條件）與就緒／建立中／失敗的下一步
  *   都在「分析師資料」區塊（LIVE-T5／#401）；結果表每一列都能打開那一檔的
  *   共識明細（`ResultRow`），與存成劇本並排。
  * - 搜尋失敗與「部分家族沒有結果」（`incomplete`）的訊息由後端組好（引擎
@@ -68,18 +70,20 @@ import { isNotBuilt } from "./consensusUpdate";
 import {
   mergeSearchRows,
   opportunityRowKey as rowKey,
+  gateFailureReasons,
   rankOpportunities,
   ratioPct,
   reasonText,
   STATUS_LABELS,
   type OpportunitySort,
 } from "./opportunity";
+import { prLabel, prThresholdLabel } from "./dispersionRank";
 import { detailHash, opportunitySettingsHash } from "./route";
 import { formatReturn, money } from "./scenarios";
 import { roleAtLeast, type Role } from "./superuser";
 
 export const RETURN_DISCLAIMER =
-  "此報酬是『分析師平均目標價在目標月份成立時』的條件情境報酬，不是期望值或勝率";
+  "此報酬是『股價在目標月份達到分析師平均目標價時』的策略報酬，不是期望值或勝率";
 
 const COVERAGE_LABELS: Record<string, string> = {
   complete: "完整",
@@ -125,7 +129,7 @@ const EMPTY_SEARCH: SearchState = {
   deferred: [], sortOptions: [],
 };
 
-/** `new`：重新搜尋入選股；`resume`：接續 `remaining`（同一輪）；
+/** `new`：重新搜尋符合條件的股票；`resume`：接續 `remaining`（同一輪）；
  *  `deferred`：對超過上限而沒搜的檔發起新的一輪（同樣受上限約束），
  *  先前的結果保留。 */
 type RunMode = "new" | "resume" | "deferred";
@@ -384,7 +388,7 @@ function ConfiguredBody({
   const selected = data.items.filter((i) => i.gate.selected);
   const weak = data.items.filter((i) => !i.gate.selected && i.status === "ok");
   // 還沒建立的檔（LIVE-T4／#400）不算「資料不足」：它們不是資料有問題，
-  // 是還沒抓——在入選股區塊以「資料建立中」說明，不混進原因清單。
+  // 是還沒抓——在符合條件的股票區塊以「資料建立中」說明，不混進原因清單。
   const thin = data.items.filter((i) => i.status !== "ok" && !isNotBuilt(i));
   const notBuilt = data.universe.not_built ?? 0;
   // 超出每日更新範圍的（`out_of_scope`）不會被建立，不算進「一檔都還沒建立」。
@@ -396,13 +400,13 @@ function ConfiguredBody({
     <>
       <UniverseCard data={data} />
 
-      <section className="card" aria-label="入選股">
+      <section className="card" aria-label="符合條件的股票">
         <h2 className="section-title">
-          {nothingBuilt ? "入選股" : `入選股（${selected.length} 檔）`}
+          {nothingBuilt ? "符合條件的股票" : `符合條件的股票（${selected.length} 檔）`}
         </h2>
         {nothingBuilt ? (
           <p className="notice" role="status">
-            資料建立中：{notBuilt} 檔的分析師資料還沒建立，建立完成後才會有入選清單。請用上方「分析師資料」的「開始建立」。
+            資料建立中：{notBuilt} 檔的分析師資料還沒建立，建立完成後才會知道哪些股票符合條件。請用上方「分析師資料」的「開始建立」。
           </p>
         ) : selected.length === 0 ? (
           <p className="caption">目前沒有同時通過兩道門檻的股票。</p>
@@ -449,11 +453,11 @@ function ConfiguredBody({
         </div>
         {!nothingBuilt && notBuilt > 0 && (
           <p className="notice" role="status">
-            資料建立中：還有 {notBuilt} 檔尚未建立，入選清單可能不完整。
+            資料建立中：還有 {notBuilt} 檔尚未建立，符合條件的股票可能還沒列全。
           </p>
         )}
         {!nothingBuilt && selected.length === 0 && (
-          <p className="caption">沒有入選股，所以沒有可以搜尋的標的。</p>
+          <p className="caption">沒有符合條件的股票，所以沒有可以搜尋的標的。</p>
         )}
         {started && search.total > 0 && (
           <p className="caption opp-progress" aria-live="polite">
@@ -533,9 +537,9 @@ function ConfiguredBody({
                 <th scope="col">履約價</th>
                 <th scope="col">到期日</th>
                 <th scope="col">目標月份</th>
-                <th scope="col" className="r">淨成本 / 股</th>
+                <th scope="col" className="r">成本 / 股</th>
                 <th scope="col" className="r">最大損失 / 股</th>
-                <th scope="col" className="r">目標價情境報酬</th>
+                <th scope="col" className="r">股價達標時的策略報酬</th>
                 <th scope="col" className="r">損益兩平</th>
                 <th scope="col"><span className="sr-only">動作</span></th>
               </tr>
@@ -564,10 +568,10 @@ function ConfiguredBody({
       )}
 
       <NotSelected
-        label="共識不夠"
-        hint="資料足夠，但沒通過門檻"
+        label="不符合條件"
+        hint="資料足夠，但有門檻沒過（下方列出是哪一道）"
         items={weak}
-        reasons={(item) => weakReasons(item, data.thresholds)}
+        reasons={(item) => gateFailureReasons(item, data.thresholds)}
       />
       <NotSelected
         label="資料不足"
@@ -612,11 +616,11 @@ function ResultRow({
           <span className="row-note">{expiryDistance(row.buffer_days)}</span>
         </td>
         <td data-label="目標月份">{row.target_month}</td>
-        <td data-label="淨成本 / 股" className="r num">{money(row.entry_cost)}</td>
+        <td data-label="成本 / 股" className="r num">{money(row.entry_cost)}</td>
         <td data-label="最大損失 / 股" className="r num">
           {money(row.max_loss_per_contract / 100)}
         </td>
-        <td data-label="目標價情境報酬" className="r num opp-return">
+        <td data-label="股價達標時的策略報酬" className="r num opp-return">
           {formatReturn(row.target_return)}
         </td>
         <td data-label="損益兩平" className="r num">
@@ -661,25 +665,11 @@ function ResultRow({
   );
 }
 
-function weakReasons(
-  item: ConsensusItem,
-  t: OpportunityConsensusResponse["thresholds"],
-): string[] {
-  const out: string[] = [];
-  if (!item.gate.first) {
-    out.push(`分歧度歷史百分位 ${ratioPct(item.percentile)} 高於門檻 ${t.percentile_max}%`);
-  }
-  if (!item.gate.second) {
-    out.push(`分歧度 ${ratioPct(item.dispersion)} 高於門檻 ${t.dispersion_max}%`);
-  }
-  return out.length > 0 ? out : item.gate.reasons.map(reasonText);
-}
-
 function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
   const u = data.universe;
   const incomplete = (u.coverage.partial ?? 0) + (u.coverage.unknown ?? 0);
   return (
-    <section className="card" aria-label="搜尋母體">
+    <section className="card" aria-label="掃描股票範圍">
       <h2 className="section-title">
         {u.label}
         {u.provisional && <span className="tag warn">暫定</span>}
@@ -688,7 +678,7 @@ function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
         <span>共 {u.symbols} 檔</span>
         <span>有資料 {u.with_data} 檔</span>
         <span>資料不足 {u.insufficient} 檔</span>
-        <span>資料日 {u.as_of ?? "—"}</span>
+        <span>資料日期 {u.as_of ?? "—"}</span>
       </p>
       {incomplete > 0 && (
         <p className="notice">
@@ -699,7 +689,7 @@ function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
         <p className="caption">資料品質規則目前是暫定值。</p>
       )}
       <p className="opp-thresholds">
-        目前門檻：分歧度歷史百分位 ≤ {data.thresholds.percentile_max}%、分歧度 ≤ {data.thresholds.dispersion_max}%
+        目前門檻：分歧度歷史排序 {prThresholdLabel(data.thresholds.percentile_max)}、分析師分歧率 ≤ {data.thresholds.dispersion_max}%
         <a href={opportunitySettingsHash()}>調整門檻</a>
       </p>
     </section>
@@ -714,11 +704,11 @@ function ItemSummary({ item }: { item: ConsensusItem }) {
         <span className="num">平均目標價 {item.mean === null ? "—" : money(item.mean)}</span>
       </div>
       <p className="opp-facts">
-        <span>{item.n_analysts} 位分析師</span>
-        <span>分歧度 {ratioPct(item.dispersion)}</span>
-        <span>歷史百分位 {ratioPct(item.percentile)}</span>
+        <span>有效券商數 {item.n_analysts}</span>
+        <span>分析師分歧率 {ratioPct(item.dispersion)}</span>
+        <span>分歧度歷史排序 {prLabel(item.percentile)}</span>
         <span>{item.history_points} 個歷史點</span>
-        <span>資料日 {item.as_of ?? "—"}</span>
+        <span>資料日期 {item.as_of ?? "—"}</span>
         {item.coverage && item.coverage !== "complete" && (
           <span>覆蓋{COVERAGE_LABELS[item.coverage] ?? item.coverage}</span>
         )}
@@ -744,7 +734,7 @@ function NotSelected({
   return (
     <section className="card" aria-label={label}>
       <h2 className="section-title">
-        未入選：{label}（{items.length} 檔）
+        {label}（{items.length} 檔）
       </h2>
       <p className="caption">{hint}</p>
       <ul className="opp-list">

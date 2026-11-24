@@ -2,7 +2,8 @@
  * 設定頁「機會搜尋」區塊（OS-02／#391，母票 #389 §6）。
  *
  * 守四件事：區塊照後端給的值與選項渲染；「恢復預設」真的把那一道門檻存回
- * 預設（只動那一道）；「儲存」把整個區塊送到既有 `PUT /api/settings`、
+ * 預設（只動那一道）；第一道門檻以 PR 輸入、存回原百分位（V2-03／#405，
+ * 舊值 20 ↔ PR ≥ 80）；「儲存」把整個區塊送到既有 `PUT /api/settings`、
  * 不碰資料來源那兩列；後端驗證失敗時照實顯示後端訊息，不顯示「已儲存」。
  */
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -78,12 +79,13 @@ afterEach(() => {
 });
 
 describe("渲染", () => {
-  it("顯示兩道門檻、母體、策略家族與排序的目前值", () => {
+  it("顯示兩道門檻、掃描股票範圍、策略家族與排序的目前值（第一道門檻以 PR 顯示）", () => {
     render(<OpportunitySearchSettings view={view({ percentile_max: 35, sort: "cost" })}
                                       onSaved={() => {}} />);
     const b = block();
-    expect(b.getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(35);
-    expect(b.getByLabelText("分歧度門檻（%）")).toHaveValue(10);
+    // 已存的原百分位 35 → PR ≥ 65。
+    expect(b.getByLabelText("分歧度歷史排序門檻：PR ≥")).toHaveValue(65);
+    expect(b.getByLabelText("分析師分歧率上限（%）")).toHaveValue(10);
     expect(b.getByRole("radio", { name: "大型股樣本（暫定，清單來源待 #382）" })).toBeChecked();
     expect(b.getByRole("checkbox", { name: "Call / Put" })).toBeChecked();
     expect(b.getByRole("checkbox", { name: "Vertical Spread" })).toBeChecked();
@@ -142,22 +144,22 @@ describe("恢復預設", () => {
       historical_iv: { mode: "default", provider: null },
       opportunity_search: { percentile_max: 20 },
     }]);
-    expect(b.getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(20);
-    expect(b.getByLabelText("分歧度門檻（%）")).toHaveValue(4);
-    expect(b.getByRole("status")).toHaveTextContent("已恢復預設");
+    expect(b.getByLabelText("分歧度歷史排序門檻：PR ≥")).toHaveValue(80);
+    expect(b.getByLabelText("分析師分歧率上限（%）")).toHaveValue(4);
+    expect(b.getByRole("status")).toHaveTextContent("已恢復預設（PR ≥ 80）");
   });
 
   it("恢復預設不會吃掉另一道門檻尚未儲存的修改", async () => {
     mockPut([{ status: 200, body: view({ dispersion_max: 10 }) }]);
     render(<OpportunitySearchSettings view={view({ dispersion_max: 4 })} onSaved={() => {}} />);
     const b = block();
-    const percentile = b.getByLabelText("分歧度歷史百分位門檻（%）");
+    const percentile = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
     await userEvent.clear(percentile);
-    await userEvent.type(percentile, "15");
+    await userEvent.type(percentile, "85");
     await userEvent.click(b.getAllByRole("button", { name: "恢復預設" })[1]);
 
-    await waitFor(() => expect(b.getByLabelText("分歧度門檻（%）")).toHaveValue(10));
-    expect(percentile).toHaveValue(15);
+    await waitFor(() => expect(b.getByLabelText("分析師分歧率上限（%）")).toHaveValue(10));
+    expect(percentile).toHaveValue(85);
   });
 });
 
@@ -168,9 +170,9 @@ describe("儲存", () => {
     render(<OpportunitySearchSettings view={view()} onSaved={onSaved} />);
     const b = block();
 
-    const percentile = b.getByLabelText("分歧度歷史百分位門檻（%）");
+    const percentile = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
     await userEvent.clear(percentile);
-    await userEvent.type(percentile, "12.5");
+    await userEvent.type(percentile, "87.5");
     await userEvent.click(b.getByRole("radio", { name: "自訂清單" }));
     await userEvent.type(b.getByLabelText("Ticker 清單"), "tsla, aapl\nnvda");
     await userEvent.click(b.getByRole("checkbox", { name: "Butterfly" }));
@@ -194,18 +196,20 @@ describe("儲存", () => {
   });
 
   it("後端驗證失敗時顯示後端訊息，不顯示已儲存", async () => {
-    mockPut([{ status: 422, body: { detail: [{
+    const spy = mockPut([{ status: 422, body: { detail: [{
       type: "value_error", loc: ["body", "opportunity_search", "percentile_max"],
-      msg: "Value error, 分歧度歷史百分位門檻必須介於 0 到 100", input: 101 }] } }]);
+      msg: "Value error, 分歧度歷史排序門檻必須介於 0 到 100", input: -1 }] } }]);
     const onSaved = vi.fn();
     render(<OpportunitySearchSettings view={view()} onSaved={onSaved} />);
     const b = block();
-    const percentile = b.getByLabelText("分歧度歷史百分位門檻（%）");
+    const percentile = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
     await userEvent.clear(percentile);
     await userEvent.type(percentile, "101");
     await userEvent.click(b.getByRole("button", { name: "儲存" }));
+    // PR 101 → 原百分位 −1：超出範圍照樣送出，由後端擋。
+    expect(putBodies(spy)[0].opportunity_search.percentile_max).toBe(-1);
 
-    expect(await b.findByRole("alert")).toHaveTextContent("分歧度歷史百分位門檻必須介於 0 到 100");
+    expect(await b.findByRole("alert")).toHaveTextContent("分歧度歷史排序門檻必須介於 0 到 100");
     expect(b.queryByRole("status")).not.toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
   });
@@ -213,14 +217,48 @@ describe("儲存", () => {
   it("輸入框清空時照樣送出，由後端判斷並回訊息（前端不自己吞掉）", async () => {
     const spy = mockPut([{ status: 422, body: { detail: [{
       type: "value_error", loc: ["body", "opportunity_search", "dispersion_max"],
-      msg: "Value error, 分歧度門檻必須是數字", input: "" }] } }]);
+      msg: "Value error, 分析師分歧率上限必須是數字", input: "" }] } }]);
     render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
     const b = block();
-    await userEvent.clear(b.getByLabelText("分歧度門檻（%）"));
+    await userEvent.clear(b.getByLabelText("分析師分歧率上限（%）"));
     await userEvent.click(b.getByRole("button", { name: "儲存" }));
 
-    expect(await b.findByRole("alert")).toHaveTextContent("分歧度門檻必須是數字");
+    expect(await b.findByRole("alert")).toHaveTextContent("分析師分歧率上限必須是數字");
     expect(putBodies(spy)[0].opportunity_search.dispersion_max).toBe("");
+  });
+});
+
+describe("分歧度歷史排序門檻：PR 輸入 ↔ 已存的原百分位（V2-03／#405）", () => {
+  it("舊值 20 顯示為 PR ≥ 80；沒改就存，送回的仍是 20", async () => {
+    const spy = mockPut([{ status: 200, body: view() }]);
+    render(<OpportunitySearchSettings view={view({ percentile_max: 20 })} onSaved={() => {}} />);
+    const b = block();
+    expect(b.getByLabelText("分歧度歷史排序門檻：PR ≥")).toHaveValue(80);
+    expect(b.getByText(/預設 PR ≥ 80/)).toBeInTheDocument();
+    await userEvent.click(b.getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(putBodies(spy)).toHaveLength(1));
+    expect(putBodies(spy)[0].opportunity_search.percentile_max).toBe(20);
+  });
+
+  it("輸入 PR 79.9 → 存 20.1（不帶浮點雜訊）；後端回的值再換回 PR 顯示", async () => {
+    const spy = mockPut([{ status: 200, body: view({ percentile_max: 20.1 }) }]);
+    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    const b = block();
+    const pr = b.getByLabelText("分歧度歷史排序門檻：PR ≥");
+    await userEvent.clear(pr);
+    await userEvent.type(pr, "79.9");
+    await userEvent.click(b.getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(b.getByRole("status")).toHaveTextContent("已儲存"));
+    expect(putBodies(spy)[0].opportunity_search.percentile_max).toBe(20.1);
+    expect(pr).toHaveValue(79.9);
+  });
+
+  it("說明文字照既有口徑：60 個月、每月最後一個交易日、至少 24 個有效月份", () => {
+    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    expect(block().getByText(/過去 60 個月.*最後一個交易日.*24 個有效月份/))
+      .toBeInTheDocument();
   });
 });
 

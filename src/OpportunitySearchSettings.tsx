@@ -2,8 +2,12 @@
  * 設定頁「機會搜尋」區塊（OS-02／#391，母票 #389 §6）——只給 Super User／
  * Super Admin（`Settings.tsx` 的 Normal 分支更早就 return，這裡不再判斷角色）。
  *
- * 兩道 Consensus Gate 門檻各自一個輸入框＋「恢復預設」、Search Universe、
- * 策略家族、排序方式。幾條刻意的決定：
+ * 兩道 Consensus Gate 門檻各自一個輸入框＋「恢復預設」、掃描股票範圍
+ * （Search Universe）、策略家族、排序方式。幾條刻意的決定：
+ *
+ * - V2-03（#405）：第一道門檻以 PR 輸入（「分歧度歷史排序門檻：PR ≥ 80」），
+ *   存回的仍是原百分位 `percentile_max = 100 − PR`（`dispersionRank.ts`）。
+ *   欄位、單位與後端驗證都不變，新舊前端讀寫同一個值：舊值 20 ↔ PR ≥ 80。
  *
  * - 存檔走既有 `PUT /api/settings`；資料來源兩列照**已存的值**（`view`）
  *   帶上，不帶 `Settings.tsx` 那邊還沒按儲存的草稿——存機會搜尋不該順手
@@ -23,6 +27,12 @@ import {
   type OpportunitySearchSettings as Opp,
   type SettingsView,
 } from "./api";
+import {
+  PR_HISTORY_EXPLAINER,
+  percentileMaxFromPrInput,
+  prInputFromPercentileMax,
+  prThresholdLabel,
+} from "./dispersionRank";
 import { FAMILY_LABELS } from "./family";
 
 /** 區塊的 DOM id：機會搜尋頁「調整門檻」連到 `#/settings/opportunity`
@@ -31,18 +41,38 @@ export const OPPORTUNITY_SETTINGS_ID = "settings-opportunity";
 
 type Threshold = "percentile_max" | "dispersion_max";
 
-const THRESHOLDS: Array<{ key: Threshold; label: string; hint: string }> = [
+/** 每道門檻的輸入單位：畫面上的值 ↔ 已存的值（API 欄位不變）。 */
+const THRESHOLDS: Array<{
+  key: Threshold;
+  label: string;
+  hint: string;
+  /** 已存的值 → 輸入框的值。 */
+  toInput: (stored: number) => number;
+  /** 輸入框的字串 → 要存的值（不是數字就原字串照送，讓後端回訊息）。 */
+  fromInput: (text: string) => number | string;
+  /** 已存的值 → 「預設 …」「已恢復預設（…）」裡的寫法。 */
+  describe: (stored: number) => string;
+}> = [
   {
     key: "percentile_max",
-    label: "分歧度歷史百分位門檻（%）",
-    hint: "今天的目標價分歧度在這檔股票自己歷史中的百分位，越低代表共識越集中",
+    label: "分歧度歷史排序門檻：PR ≥",
+    hint: PR_HISTORY_EXPLAINER,
+    toInput: prInputFromPercentileMax,
+    fromInput: percentileMaxFromPrInput,
+    describe: prThresholdLabel,
   },
   {
     key: "dispersion_max",
-    label: "分歧度門檻（%）",
+    label: "分析師分歧率上限（%）",
     hint: "分析師目標價的標準差 ÷ 平均",
+    toInput: (stored) => stored,
+    fromInput: numberOrRaw,
+    describe: (stored) => `${stored}%`,
   },
 ];
+
+const THRESHOLD_BY_KEY = Object.fromEntries(THRESHOLDS.map((t) => [t.key, t])) as
+  Record<Threshold, (typeof THRESHOLDS)[number]>;
 
 interface Draft {
   percentile_max: string;
@@ -55,8 +85,8 @@ interface Draft {
 
 function draftFrom(opp: Opp): Draft {
   return {
-    percentile_max: String(opp.percentile_max),
-    dispersion_max: String(opp.dispersion_max),
+    percentile_max: String(THRESHOLD_BY_KEY.percentile_max.toInput(opp.percentile_max)),
+    dispersion_max: String(THRESHOLD_BY_KEY.dispersion_max.toInput(opp.dispersion_max)),
     universe_id: opp.universe_id,
     customText: opp.custom_symbols.join(", "),
     strategies: [...opp.strategies],
@@ -129,8 +159,8 @@ function OpportunitySearchSettingsForm({
     const next = await put({
       universe_id: draft.universe_id,
       custom_symbols: parseSymbols(draft.customText),
-      percentile_max: numberOrRaw(draft.percentile_max),
-      dispersion_max: numberOrRaw(draft.dispersion_max),
+      percentile_max: THRESHOLD_BY_KEY.percentile_max.fromInput(draft.percentile_max),
+      dispersion_max: THRESHOLD_BY_KEY.dispersion_max.fromInput(draft.dispersion_max),
       strategies: draft.strategies,
       sort: draft.sort,
     });
@@ -141,10 +171,11 @@ function OpportunitySearchSettingsForm({
   }
 
   async function restore(key: Threshold) {
+    const t = THRESHOLD_BY_KEY[key];
     const next = await put({ [key]: options.defaults[key] });
     if (next) {
-      setDraft((prev) => ({ ...prev, [key]: String(next.opportunity_search[key]) }));
-      setNotice(`已恢復預設（${options.defaults[key]}%）`);
+      setDraft((prev) => ({ ...prev, [key]: String(t.toInput(next.opportunity_search[key])) }));
+      setNotice(`已恢復預設（${t.describe(options.defaults[key])}）`);
     }
   }
 
@@ -160,7 +191,7 @@ function OpportunitySearchSettingsForm({
              id={OPPORTUNITY_SETTINGS_ID}>
       <h3 className="settings-usage-title">機會搜尋</h3>
 
-      {THRESHOLDS.map(({ key, label, hint }) => (
+      {THRESHOLDS.map(({ key, label, hint, describe }) => (
         <div className="settings-field" key={key}>
           <label className="caption" htmlFor={`opp-${key}`}>{label}</label>
           <div className="settings-threshold-row">
@@ -184,13 +215,13 @@ function OpportunitySearchSettingsForm({
             </button>
           </div>
           <p className="caption">
-            {hint}（預設 {options.defaults[key]}）
+            {hint}（預設 {describe(options.defaults[key])}）
           </p>
         </div>
       ))}
 
       <fieldset className="settings-fieldset">
-        <legend className="caption">搜尋母體</legend>
+        <legend className="caption">掃描股票範圍</legend>
         {options.universes.map((u) => (
           <label className="settings-choice" key={u.id}>
             <input

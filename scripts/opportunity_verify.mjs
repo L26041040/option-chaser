@@ -141,15 +141,16 @@ async function openOpportunityFromNav(page, desktop) {
     : page.getByRole("navigation", { name: "主要導覽" }).getByRole("link", { name: /機會/ });
   await nav.click();
   await page.waitForURL(/#\/opportunity$/);
-  await page.getByRole("region", { name: "搜尋母體" }).waitFor();
+  await page.getByRole("region", { name: "掃描股票範圍" }).waitFor();
 }
 
 async function saveThresholds(page, { percentile, dispersion, symbols }) {
   await page.goto(`${BASE}/#/settings/opportunity`);
   const section = page.getByRole("region", { name: "機會搜尋" });
   await section.waitFor();
-  await section.getByLabel("分歧度歷史百分位門檻（%）").fill(String(percentile));
-  await section.getByLabel("分歧度門檻（%）").fill(String(dispersion));
+  // V2-03（#405）：第一道門檻以 PR 輸入（PR = 100 − 原百分位；存回的仍是原百分位）。
+  await section.getByLabel("分歧度歷史排序門檻：PR ≥").fill(String(100 - percentile));
+  await section.getByLabel("分析師分歧率上限（%）").fill(String(dispersion));
   if (symbols) {
     await section.getByRole("radio", { name: "自訂清單" }).check();
     await section.getByLabel("Ticker 清單").fill(symbols.join(", "));
@@ -224,18 +225,18 @@ async function suPhoneFlow(browser) {
   check("手機：頁首常駐「測試資料，非真實市場資料」",
         await page.getByRole("banner", { name: "機會搜尋頁首" })
           .getByText("測試資料，非真實市場資料").isVisible());
-  let selected = await listed(page, "入選股");
-  check("預設門檻：入選 AAA、EEE", JSON.stringify(selected) === '["AAA","EEE"]', selected);
-  const weak = page.getByRole("region", { name: "共識不夠" });
-  check("未入選（共識不夠）列出 BBB、CCC",
-        JSON.stringify(await listed(page, "共識不夠")) === '["BBB","CCC"]',
-        await listed(page, "共識不夠"));
-  check("BBB 的原因：分歧度高於門檻 10%",
-        /分歧度 1\d\.\d% 高於門檻 10%/.test(await weak.getByRole("listitem", { name: "BBB" }).innerText()));
-  check("CCC 的原因：百分位高於門檻 20%",
-        /百分位 \d+\.\d% 高於門檻 20%/.test(await weak.getByRole("listitem", { name: "CCC" }).innerText()));
+  let selected = await listed(page, "符合條件的股票");
+  check("預設門檻：符合條件 AAA、EEE", JSON.stringify(selected) === '["AAA","EEE"]', selected);
+  const weak = page.getByRole("region", { name: "不符合條件" });
+  check("不符合條件列出 BBB、CCC",
+        JSON.stringify(await listed(page, "不符合條件")) === '["BBB","CCC"]',
+        await listed(page, "不符合條件"));
+  check("BBB 的原因：分析師分歧率高於上限 10%",
+        /分析師分歧率 1\d\.\d%，高於上限 10%/.test(await weak.getByRole("listitem", { name: "BBB" }).innerText()));
+  check("CCC 的原因：分歧度歷史排序未達門檻 PR ≥ 80",
+        /分歧度歷史排序 PR\d+（前 \d+%），未達門檻 PR ≥ 80/.test(await weak.getByRole("listitem", { name: "CCC" }).innerText()));
   const thin = page.getByRole("region", { name: "資料不足" });
-  check("未入選（資料不足）列出 DDD、FFF、GGG 並寫原因",
+  check("資料不足列出 DDD、FFF、GGG 並寫原因",
         JSON.stringify(await listed(page, "資料不足")) === '["DDD","FFF","GGG"]'
         && /分析師人數不足/.test(await thin.getByRole("listitem", { name: "DDD" }).innerText())
         && /無資料/.test(await thin.getByRole("listitem", { name: "FFF" }).innerText())
@@ -248,11 +249,11 @@ async function suPhoneFlow(browser) {
   await page.waitForURL(/#\/settings\/opportunity$/);
   await saveThresholds(page, { percentile: 20, dispersion: 16 });
   await openOpportunityFromNav(page, false);
-  selected = await listed(page, "入選股");
-  check("改分歧度門檻 16%：BBB 進入選清單（AAA、BBB、EEE）",
+  selected = await listed(page, "符合條件的股票");
+  check("改分析師分歧率上限 16%：BBB 符合條件（AAA、BBB、EEE）",
         JSON.stringify(selected) === '["AAA","BBB","EEE"]', selected);
   check("改門檻後頁面顯示新門檻",
-        /分歧度 ≤ 16%/.test(await page.getByRole("region", { name: "搜尋母體" }).innerText()));
+        /分析師分歧率 ≤ 16%/.test(await page.getByRole("region", { name: "掃描股票範圍" }).innerText()));
   const afterChange = await stats(page);
   check("改門檻沒有新的上游呼叫（分析師來源、chain 次數都不變）",
         afterChange.analyst_fetches === beforeChange.analyst_fetches
@@ -299,7 +300,7 @@ async function suPhoneFlow(browser) {
   const keyOf = (r) => `${r.symbol}|${r.family}`;
   const sortedBy = (f, dir) => [...rows].sort((a, b) =>
     dir * (f(a) - f(b)) || a.symbol.localeCompare(b.symbol) || a.family.localeCompare(b.family)).map(keyOf);
-  check("預設排序：目標價情境報酬由高到低",
+  check("預設排序：股價達標時的策略報酬由高到低",
         JSON.stringify(await order()) === JSON.stringify(sortedBy((r) => r.target_return, -1)));
   const searchCalls = requests.length;
   await results.getByRole("combobox", { name: "排序" }).selectOption("cost");
@@ -313,11 +314,11 @@ async function suPhoneFlow(browser) {
   for (const r of rows) {
     const tr = results.locator(`tbody tr[data-family="${r.family}"]`)
       .filter({ has: page.locator("td.opp-symbol", { hasText: r.symbol }) });
-    const cost = await tr.locator('td[data-label="淨成本 / 股"]').innerText();
+    const cost = await tr.locator('td[data-label="成本 / 股"]').innerText();
     const loss = await tr.locator('td[data-label="最大損失 / 股"]').innerText();
     cellsOk &&= cost === money(r.entry_cost) && loss === money(r.max_loss_per_contract / 100);
   }
-  check("每列：淨成本 / 股＝entry_cost、最大損失 / 股＝max_loss_per_contract ÷ 100", cellsOk);
+  check("每列：成本 / 股＝entry_cost、最大損失 / 股＝max_loss_per_contract ÷ 100", cellsOk);
   check("手機：搜尋結果頁無水平捲動", await noHorizontalScroll(page));
 
   // 6) 存成劇本：報酬最高的一列（它也是該劇本跨家族的冠軍＝詳細頁頭條）。
@@ -375,7 +376,7 @@ async function suDesktopFlow(browser, saved) {
   await uiLogin(page, BASE, secrets.OC_VERIFY_SU_PASSWORD);
   await openOpportunityFromNav(page, true);
   check("桌面 SU：主導覽有「機會搜尋」，清單沿用同一份門檻（AAA、BBB、EEE）",
-        JSON.stringify(await listed(page, "入選股")) === '["AAA","BBB","EEE"]');
+        JSON.stringify(await listed(page, "符合條件的股票")) === '["AAA","BBB","EEE"]');
   await page.getByRole("button", { name: "搜尋選擇權" }).click();
   await page.getByText("已搜尋 3 / 3 檔").waitFor({ timeout: 30000 });
   const results = page.getByRole("region", { name: "搜尋結果" });
@@ -445,7 +446,7 @@ async function unconfiguredFlow(browser) {
         (await page.locator(".opp-page").getByRole("button").count()) === 0);
   check("未設定來源：沒有搜尋按鈕、沒有清單、沒有測試資料標示",
         (await page.getByRole("button", { name: "搜尋選擇權" }).count()) === 0
-        && (await page.getByRole("region", { name: "入選股" }).count()) === 0
+        && (await page.getByRole("region", { name: "符合條件的股票" }).count()) === 0
         && (await page.getByText("測試資料，非真實市場資料").count()) === 0);
   const search = await api(page, "POST", "/api/opportunity/search", { body: {} });
   check("未設定來源：搜尋 API 回 409「尚未設定分析師資料來源」",

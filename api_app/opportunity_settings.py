@@ -29,16 +29,18 @@ DEFAULT_PERCENTILE_MAX = 20.0
 DEFAULT_DISPERSION_MAX = 10.0
 # 排序方式與顯示文字的唯一來源：設定頁（`options()["sorts"]`）與搜尋頁
 # （搜尋回應的 `sort_options`）都讀這份，前端不各自寫一份。
-_SORT_LABELS = {"return": "目標價情境報酬（高→低）",
+_SORT_LABELS = {"return": "股價達標時的策略報酬（高→低）",
                 "cost": "投入成本（低→高）",
                 "max_loss": "最大損失（低→高）"}
 SORTS = tuple(_SORT_LABELS)
 DEFAULT_SORT = "return"
 
 # 用語見 CONTEXT.md：第一道門檻是 Dispersion Percentile（分歧度在自身
-# 歷史中的百分位），不是「共識百分位」。
-_THRESHOLD_LABELS = {"percentile_max": "分歧度歷史百分位門檻",
-                     "dispersion_max": "分歧度門檻"}
+# 歷史中的百分位），不是「共識百分位」。畫面用語照 #405（V2-03）：前端以
+# PR（＝100 − 百分位）輸入第一道門檻，兩者的合法範圍都是 0–100，所以同一句
+# 驗證訊息對 PR 也成立；存的值與單位不變。
+_THRESHOLD_LABELS = {"percentile_max": "分歧度歷史排序門檻",
+                     "dispersion_max": "分析師分歧率上限"}
 
 
 def defaults() -> dict:
@@ -94,7 +96,7 @@ class OpportunitySearchRequest(BaseModel):
     @classmethod
     def _universe(cls, v: Any) -> str:
         if v not in UNIVERSE_IDS:
-            raise ValueError(f"不支援的搜尋母體：{v}")
+            raise ValueError(f"不支援的掃描股票範圍：{v}")
         return v
 
     @field_validator("custom_symbols", mode="before")
