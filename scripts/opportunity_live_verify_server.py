@@ -42,7 +42,7 @@ from scripts.opportunity_verify_server import (  # noqa: E402
 
 _lock = threading.Lock()
 STATS = {"analyst_fetches": 0, "analyst_http_requests": 0, "chain_attempts": {},
-         "chain_sources": {}}
+         "chain_sources": {}, "yahoo_http": {}, "yahoo_http_status": {}}
 # 逐次記錄（LIVE-T6／#402 驗收報告用）：每次抓鏈 attempt 與每次分析師抓取。
 CHAIN_LOG: list[dict] = []
 ANALYST_LOG: list[dict] = []
@@ -99,6 +99,28 @@ def build_app(*, storage, nonce: str, label: str):
             return super().get(url)
 
     yf_module.fetch_chain = observed("yfinance", yf_module.fetch_chain)
+    # V2-07（#409）：Cboe 被擋時的第二步（Yahoo 直連，PRODUCTION-DELIVERY-001）。
+    # `_default_fetch()` 延遲查 `yahoo_options.fetch_chain`，換掉模組屬性就吃得到。
+    from option_chaser.data import yahoo_options as yahoo_options_module
+    yahoo_options_module.fetch_chain = observed("yahoo", yahoo_options_module.fetch_chain)
+
+    # 所有 Yahoo HTTP（分析師 quoteSummary／chart、選擇權 v7、cookie／crumb）
+    # 依用途與狀態碼計數——429 有幾次一目了然。回傳值原封不動。
+    original_get = UrllibTransport.get
+
+    def counted_get(self, url):
+        kind = ("options" if "/v7/finance/options/" in url
+                else "quoteSummary" if "quoteSummary" in url
+                else "chart" if "/v8/finance/chart/" in url
+                else "crumb" if "getcrumb" in url else "cookie/other")
+        resp = original_get(self, url)
+        with _lock:
+            STATS["yahoo_http"][kind] = STATS["yahoo_http"].get(kind, 0) + 1
+            key = str(getattr(resp, "status", "?"))
+            STATS["yahoo_http_status"][key] = STATS["yahoo_http_status"].get(key, 0) + 1
+        return resp
+
+    UrllibTransport.get = counted_get
 
     class CountingYahoo(YahooAnalystSource):
         def fetch(self, symbol, today):
@@ -148,6 +170,8 @@ def build_app(*, storage, nonce: str, label: str):
                         "chain_log": list(CHAIN_LOG), "analyst_log": list(ANALYST_LOG),
                         "chain_attempts": dict(STATS["chain_attempts"]),
                         "chain_sources": dict(STATS["chain_sources"]),
+                        "yahoo_http": dict(STATS["yahoo_http"]),
+                        "yahoo_http_status": dict(STATS["yahoo_http_status"]),
                         "blocked_connections": GUARD_STATS["blocked_connections"],
                         "blocked_targets": list(GUARD_STATS["blocked_targets"]),
                         "nonce": nonce, "label": label}
