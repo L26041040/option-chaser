@@ -20,6 +20,18 @@
 | FFF | 來源只有共識值、沒有個別目標價 | no_data |
 | GGG | 來源回報錯誤 | 上游失敗（source_error） |
 
+目前股價（V2-05／#407，`quote`：股票掃描階段取得的報價與時間）：
+
+| symbol | 報價 | 預期目標漲跌幅 |
+|---|---|---|
+| AAA | 100.00（2026-09-25 收盤） | +20.0% |
+| BBB | 110.00（2026-09-25 收盤） | −9.1% |
+| CCC | 100.00（2026-09-25 收盤） | 0.0% |
+| DDD | 100.00（2026-09-21 收盤，距 09-28 已 5 個交易日） | 股價過舊 |
+| EEE | 440.00（2025-05-30 收盤，4:1 分割 2025-06-02 之前） | 分割基準不一致 |
+| FFF | 150.00（2026-09-25 收盤） | 沒有平均目標價 |
+| GGG | 無（來源失敗） | 尚未取得股價 |
+
 每位分析師每半年（1 月、7 月）更新一次，2026-09 全體再更新一次（＝
 「今天」的共識）。目標價 = base + offset × step，offset 為 −3…+3，
 因此樣本標準差 = step × √(28/6)、分歧度 = 該值 ÷ base。
@@ -67,6 +79,11 @@ def _records(symbol, *, hist, today, analysts=7, split=None):
     return out
 
 
+def _quote(price: str, on: str) -> dict:
+    """美東 16:00:01（夏令時間＝20:00:01 UTC）的收盤報價。"""
+    return {"price": price, "at": f"{on}T20:00:01+00:00"}
+
+
 def main() -> None:
     wide = [(100, 6)] * 8
     aaa_hist = list(wide)
@@ -94,6 +111,14 @@ def main() -> None:
         "GGG": {"coverage": "unknown", "records": [], "splits": [],
                 "error": "逾時（測試資料模擬上游失敗）"},
     }
+    quotes = {"AAA": _quote("100.00", "2026-09-25"),
+              "BBB": _quote("110.00", "2026-09-25"),
+              "CCC": _quote("100.00", "2026-09-25"),
+              "DDD": _quote("100.00", "2026-09-21"),
+              "EEE": _quote("440.00", "2025-05-30"),
+              "FFF": _quote("150.00", "2026-09-25")}
+    for symbol, quote in quotes.items():
+        symbols[symbol]["quote"] = quote
     doc = {"name": "fixture",
            "notice": "測試資料，非真實市場資料（OS-03／#392）；由 "
                      "scripts/gen_analyst_targets_fixture.py 產生",

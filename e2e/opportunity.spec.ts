@@ -102,6 +102,13 @@ test("SU：導覽進頁 → 符合條件的股票 → 搜尋（續跑）→ 切�
     .getByRole("listitem", { name: "BBB" })).toBeVisible();
   await expect(page.getByRole("region", { name: "資料不足" })
     .getByRole("listitem", { name: "DDD" })).toBeVisible();
+  // V2-05（#407）：目前股價帶報價日期、目標漲跌幅；不能算時寫原因。
+  await expect(selected.getByRole("listitem", { name: "AAA" }))
+    .toContainText("目前股價 $100.00（2026-09-25 收盤）");
+  await expect(selected.getByRole("listitem", { name: "AAA" }))
+    .toContainText("目標漲跌幅 +20.0%");
+  await expect(selected.getByRole("listitem", { name: "EEE" }))
+    .toContainText("分割基準不一致，暫不計算");
   await noHorizontalScroll(page);
 
   await page.getByRole("button", { name: "搜尋選擇權" }).click();
@@ -123,6 +130,10 @@ test("SU：導覽進頁 → 符合條件的股票 → 搜尋（續跑）→ 切�
   await noHorizontalScroll(page);
 
   const longCall = results.getByRole("row", { name: /^AAA Long Call/ });
+  await expect(longCall.locator('td[data-label="標的"]'))
+    .toContainText("目前股價 $100.00");
+  await expect(longCall.locator('td[data-label="標的"]')).toContainText("2026-09-25 收盤");
+  await expect(longCall.locator('td[data-label="標的"]')).toContainText("目標漲跌幅 +20.0%");
   await expect(longCall).toContainText("$5.60");
   // 最大損失與既有詳細頁同口徑：每股（後端每口 560 ÷ 100），不是 $560.00（#395）。
   await expect(longCall.locator('td[data-label="最大損失 / 股"]')).toHaveText("$5.60");

@@ -77,6 +77,24 @@ describe("ConsensusDetail：共識怎麼算出來的", () => {
     expect(panel).toHaveTextContent(/過去 60 個月.*最後一個交易日.*24 個有效月份/);
   });
 
+  it("目前股價帶報價日期、目標漲跌幅（V2-05／#407）", async () => {
+    mockDetail();
+    const { panel } = await open();
+    const facts = await within(panel).findByRole("list", { name: "共識數值" });
+    // 真實 NVDA 樣本：股價 125.53（2026-11-20 收盤）、平均目標價 252.857… → +101.4%
+    expect(facts).toHaveTextContent("目前股價$125.53（2026-11-20 收盤）");
+    expect(facts).toHaveTextContent("目標漲跌幅+101.4%");
+  });
+
+  it("目標漲跌幅不能算時顯示 — 與原因", async () => {
+    mockDetail(200, { ...DETAIL, item: { ...DETAIL.item!, target_upside_pct: null,
+                                          target_upside_reason: "price_stale" } });
+    const { panel } = await open();
+    const facts = await within(panel).findByRole("list", { name: "共識數值" });
+    expect(facts).toHaveTextContent("目前股價$125.53（2026-11-20 收盤）");
+    expect(facts).toHaveTextContent("目標漲跌幅— · 股價過舊（超過 3 個交易日）");
+  });
+
   it("不符合條件：寫出哪一道門檻沒過（以 PR 與分歧率上限說明）", async () => {
     mockDetail();
     const { panel } = await open();

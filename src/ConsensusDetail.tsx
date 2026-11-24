@@ -23,6 +23,7 @@ import {
 import { PR_HISTORY_EXPLAINER, prLabel } from "./dispersionRank";
 import { gateFailureReasons, ratioPct, reasonText, STATUS_LABELS } from "./opportunity";
 import { money } from "./scenarios";
+import { priceText, upsideText } from "./targetUpside";
 
 type Load =
   | { state: "loading" }
@@ -136,6 +137,8 @@ function Facts({ item, data }: { item: ConsensusItem; data: OpportunityConsensus
   return (
     <ul className="opp-detail-facts" aria-label="共識數值">
       <Fact label="平均目標價" value={moneyOrDash(item.mean)} />
+      <Fact label="目前股價" value={priceText(item)} />
+      <Fact label="目標漲跌幅" value={upsideText(item)} />
       <Fact label="標準差" value={moneyOrDash(item.stdev)} />
       <Fact label="分析師分歧率（標準差 ÷ 平均）" value={ratioPct(item.dispersion)} />
       <Fact label="分歧度歷史排序" value={prLabel(item.percentile)} />

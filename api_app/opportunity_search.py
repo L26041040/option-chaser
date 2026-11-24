@@ -76,8 +76,12 @@ def scenario_params(symbol: str, item: dict, target_month: str,
 
 
 def consensus_summary(item: dict) -> dict:
+    """結果列附帶的共識摘要；股價欄位（V2-05／#407）是共識更新時存下的目前
+    股價，**不是**這次選擇權搜尋帶回的 spot。"""
     return {key: item[key] for key in
-            ("mean", "n_analysts", "dispersion", "percentile", "as_of", "coverage")}
+            ("mean", "n_analysts", "dispersion", "percentile", "as_of", "coverage",
+             "price", "price_date", "price_at", "price_kind",
+             "target_upside_pct", "target_upside_reason")}
 
 
 def rows_for_symbol(view: dict, *, item: dict, scenario: dict) -> list[dict]:

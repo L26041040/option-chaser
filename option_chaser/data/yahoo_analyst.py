@@ -3,7 +3,8 @@
 來源：quoteSummary 的 `upgradeDowngradeHistory`（逐券商、逐事件，含
 `currentPriceTarget`／`priorPriceTarget`／`epochGradeDate`），同一次呼叫順帶
 `financialData` 的共識平均與人數（**只供稽核**，L9：絕不參與標準差）。分割
-日曆與週線收盤來自同一個免費來源的 chart 端點。
+日曆、週線收盤與目前股價（chart `meta`，V2-05／#407）來自同一個免費來源的
+chart 端點、同一次請求。
 
 存取方式就是 Yahoo 網頁本身的公開流程：先取得 cookie，再向 getcrumb 取一個
 crumb，之後的 quoteSummary 請求帶上 crumb。User-Agent 與 repo 既有的 Yahoo
@@ -136,10 +137,20 @@ class QuoteSummary:
 
 
 @dataclass(frozen=True)
+class RawQuote:
+    """chart `meta` 的最新成交價與時間（V2-05／#407）：`regularMarketPrice` 是
+    報價當下的**實際**成交價（不是調整後的週線），`at` 是 `regularMarketTime`。"""
+
+    price: Decimal
+    at: datetime                # UTC
+
+
+@dataclass(frozen=True)
 class YahooSymbolData:
     summary: QuoteSummary
     splits: tuple[RawSplit, ...]
     weekly_closes: tuple[tuple[date, Decimal], ...]   # 分割調整後收盤，時間遞增
+    quote: RawQuote | None = None                     # 同一個 chart 回應的 meta
 
 
 def _ny_date(epoch) -> date:
@@ -233,6 +244,20 @@ def parse_chart(body: str) -> tuple[tuple[RawSplit, ...], tuple[tuple[date, Deci
             weekly.append((when, price))
     return (tuple(sorted(splits, key=lambda s: s.effective_on)),
             tuple(sorted(weekly)))
+
+
+def parse_chart_quote(body: str) -> RawQuote | None:
+    """chart 回應的 `meta.regularMarketPrice`／`regularMarketTime` → `RawQuote`。
+    與 `parse_chart()` 讀同一個回應（不多打上游）；欄位缺漏或壞掉回 `None`
+    （畫面顯示「尚未取得股價」），不讓整檔更新失敗。"""
+    try:
+        meta = json.loads(body)["chart"]["result"][0].get("meta") or {}
+        price = _positive_decimal(meta.get("regularMarketPrice"))
+        at = datetime.fromtimestamp(int(meta["regularMarketTime"]), tz=timezone.utc)
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError,
+            OverflowError, OSError):
+        return None
+    return RawQuote(price, at) if price is not None else None
 
 
 def split_basis_through(target: RawTarget, splits, weekly_closes) -> date | None:
@@ -364,4 +389,4 @@ class YahooClient:
         chart = self._get(CHART_URL.format(symbol=quote(symbol)))
         _raise_for_status(chart, "股價／分割")
         splits, weekly = parse_chart(chart.body)
-        return YahooSymbolData(summary, splits, weekly)
+        return YahooSymbolData(summary, splits, weekly, parse_chart_quote(chart.body))

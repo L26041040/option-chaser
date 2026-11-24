@@ -81,6 +81,7 @@ import { prLabel, prThresholdLabel } from "./dispersionRank";
 import { detailHash, opportunitySettingsHash } from "./route";
 import { formatReturn, money } from "./scenarios";
 import { roleAtLeast, type Role } from "./superuser";
+import { priceDateLabel, priceText, upsideText } from "./targetUpside";
 
 export const RETURN_DISCLAIMER =
   "此報酬是『股價在目標月份達到分析師平均目標價時』的策略報酬，不是期望值或勝率";
@@ -606,7 +607,10 @@ function ResultRow({
   return (
     <>
       <tr aria-label={`${row.symbol} ${strategyLabel(row.subtype)}`} data-family={row.family}>
-        <td data-label="標的" className="opp-symbol">{row.symbol}</td>
+        <td data-label="標的" className="opp-symbol">
+          {row.symbol}
+          <RowQuote q={row.consensus} />
+        </td>
         <td data-label="策略">{strategyLabel(row.subtype)}</td>
         <td data-label="履約價">
           {formatLegs(row.legs)}
@@ -665,6 +669,19 @@ function ResultRow({
   );
 }
 
+/** 結果列「標的」格裡的目前股價／報價日期／目標漲跌幅（V2-05／#407）：
+ *  共識更新時存下的報價，不是這次選擇權搜尋的 spot。分三行放，不加寬表格。 */
+function RowQuote({ q }: { q: OpportunityRow["consensus"] }) {
+  const hasPrice = q.price !== null && q.price !== undefined;
+  return (
+    <span className="opp-quote">
+      <span>目前股價 {hasPrice ? money(q.price!) : priceText(q)}</span>
+      {hasPrice && <span>{priceDateLabel(q)}</span>}
+      <span>目標漲跌幅 {upsideText(q)}</span>
+    </span>
+  );
+}
+
 function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
   const u = data.universe;
   const incomplete = (u.coverage.partial ?? 0) + (u.coverage.unknown ?? 0);
@@ -709,6 +726,8 @@ function ItemSummary({ item }: { item: ConsensusItem }) {
         <span>分歧度歷史排序 {prLabel(item.percentile)}</span>
         <span>{item.history_points} 個歷史點</span>
         <span>資料日期 {item.as_of ?? "—"}</span>
+        <span>目前股價 {priceText(item)}</span>
+        <span>目標漲跌幅 {upsideText(item)}</span>
         {item.coverage && item.coverage !== "complete" && (
           <span>覆蓋{COVERAGE_LABELS[item.coverage] ?? item.coverage}</span>
         )}

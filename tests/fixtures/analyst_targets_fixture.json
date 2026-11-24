@@ -448,7 +448,11 @@
      "action": "raise"
     }
    ],
-   "splits": []
+   "splits": [],
+   "quote": {
+    "price": "100.00",
+    "at": "2026-09-25T20:00:01+00:00"
+   }
   },
   "BBB": {
    "coverage": "unknown",
@@ -896,7 +900,11 @@
      "action": "raise"
     }
    ],
-   "splits": []
+   "splits": [],
+   "quote": {
+    "price": "110.00",
+    "at": "2026-09-25T20:00:01+00:00"
+   }
   },
   "CCC": {
    "coverage": "complete",
@@ -1344,7 +1352,11 @@
      "action": "raise"
     }
    ],
-   "splits": []
+   "splits": [],
+   "quote": {
+    "price": "100.00",
+    "at": "2026-09-25T20:00:01+00:00"
+   }
   },
   "DDD": {
    "coverage": "unknown",
@@ -1540,7 +1552,11 @@
      "action": "raise"
     }
    ],
-   "splits": []
+   "splits": [],
+   "quote": {
+    "price": "100.00",
+    "at": "2026-09-21T20:00:01+00:00"
+   }
   },
   "EEE": {
    "coverage": "partial",
@@ -1993,7 +2009,11 @@
      "effective_on": "2025-06-02",
      "ratio": "4"
     }
-   ]
+   ],
+   "quote": {
+    "price": "440.00",
+    "at": "2025-05-30T20:00:01+00:00"
+   }
   },
   "FFF": {
    "coverage": "unknown",
@@ -2002,6 +2022,10 @@
    "cross_check": {
     "consensus_mean_from_source": "150.00",
     "n_from_source": 12
+   },
+   "quote": {
+    "price": "150.00",
+    "at": "2026-09-25T20:00:01+00:00"
    }
   },
   "GGG": {
