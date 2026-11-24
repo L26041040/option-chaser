@@ -45,9 +45,7 @@
         "target_price": 120.0,
         "target_month": "2027-09",
         "strategies": [
-          "single-leg",
-          "vertical-spread",
-          "butterfly"
+          "vertical-spread"
         ]
       }
     },
@@ -90,9 +88,7 @@
         "target_price": 120.0,
         "target_month": "2027-09",
         "strategies": [
-          "single-leg",
-          "vertical-spread",
-          "butterfly"
+          "single-leg"
         ]
       }
     },
@@ -147,8 +143,6 @@
         "target_price": 120.0,
         "target_month": "2027-09",
         "strategies": [
-          "single-leg",
-          "vertical-spread",
           "butterfly"
         ]
       }

@@ -57,7 +57,8 @@ describe("contract sample", () => {
     for (const row of typed.rows) {
       expect(row.scenario).toEqual({
         symbol: row.symbol, target_price: row.consensus.mean,
-        target_month: row.target_month, strategies: typed.strategies,
+        // 只帶這一列的家族：存成劇本後詳細頁的冠軍＝被點的那一列（#408）。
+        target_month: row.target_month, strategies: [row.family],
       });
     }
   });

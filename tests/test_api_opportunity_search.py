@@ -118,10 +118,12 @@ def test_search_rows_equal_the_manually_created_scenario_field_by_field():
     rows = {r["family"]: r for r in body["rows"]}
     assert set(rows) == set(ALL_FAMILIES)   # 這份 chain 三個家族都有候選
 
-    scenario = rows["single-leg"]["scenario"]
+    # 每列只帶自己的家族（#408）；同一組參數換回全部家族＝搜尋本身跑的劇本。
+    scenario = {**rows["single-leg"]["scenario"], "strategies": ALL_FAMILIES}
+    assert all(r["scenario"] == {**scenario, "strategies": [f]}
+               for f, r in rows.items())
     assert scenario == {"symbol": "AAA", "target_price": 120.0,
                         "target_month": "2027-09", "strategies": ALL_FAMILIES}
-    assert all(r["scenario"] == scenario for r in rows.values())
     created = client.post("/api/scenarios", json=scenario)
     assert created.status_code == 201, created.text
     sid = created.json()["id"]
@@ -149,6 +151,35 @@ def test_search_rows_equal_the_manually_created_scenario_field_by_field():
     best = max(rows.values(), key=lambda r: r["target_return"])
     assert card["candidate_key"] == best["candidate_key"]
     assert refreshed.json()["best_return"] == best["target_return"]
+
+
+def test_each_saved_row_headlines_exactly_that_row():
+    """#408 AC／#409 實測（DVN）：「存成劇本」後詳細頁的成本、最大損失、報酬
+    要與**被點的那一列**一致——不只是該檔報酬最高的那列。所以每列的
+    `scenario` 只帶該列家族；搜尋本身照舊用全部家族跑（排名不變），而且
+    單一家族劇本的冠軍就是該家族的代表候選（同一個候選池、同一個排序鍵）。"""
+    client, storage = _app()
+    _ready(client)
+    body = _search(client, {"symbols": ["AAA"]})
+    rows = {r["family"]: r for r in body["rows"]}
+    assert set(rows) == set(ALL_FAMILIES)
+    for family, row in rows.items():
+        assert row["scenario"] == {"symbol": "AAA", "target_price": 120.0,
+                                   "target_month": "2027-09",
+                                   "strategies": [family]}
+        created = client.post("/api/scenarios", json=row["scenario"])
+        assert created.status_code == 201, created.text
+        sid = created.json()["id"]
+        refreshed = client.post(f"/api/scenarios/{sid}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+        card = refreshed.json()["representative_candidate"]
+        assert card["candidate_key"] == row["candidate_key"]
+        assert refreshed.json()["best_return"] == row["target_return"]
+        saved = storage.latest_result(sid, owner="solo")
+        assert set(saved.per_family) == {family}
+        candidate = saved.view["candidate_pool"][row["candidate_key"]]
+        assert row["entry_cost"] == candidate["natural_cost"]
+        assert row["max_loss_per_contract"] == candidate["max_loss_per_contract"]
 
 
 def test_rows_carry_the_consensus_summary_and_no_banned_field_names():

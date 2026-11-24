@@ -85,7 +85,10 @@ def test_real_chain_search_rows_equal_the_manually_created_scenario(real_client)
     assert body["processed"] == ["JPM"] and body["failures"] == []
     rows = {row["family"]: row for row in body["rows"]}
     assert set(rows) == set(ALL_FAMILIES)
-    scenario = rows["single-leg"]["scenario"]
+    # 每列只帶自己的家族（#408）；同一組參數換回全部家族＝搜尋本身跑的劇本。
+    scenario = {**rows["single-leg"]["scenario"], "strategies": ALL_FAMILIES}
+    assert all(r["scenario"] == {**scenario, "strategies": [f]}
+               for f, r in rows.items())
     assert scenario == {"symbol": "JPM", "target_price": jpm["mean"],
                         "target_month": "2027-11", "strategies": ALL_FAMILIES}
 

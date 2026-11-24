@@ -68,9 +68,10 @@ class SearchRequest(BaseModel):
 
 def scenario_params(symbol: str, item: dict, target_month: str,
                     families: list[str]) -> dict:
-    """Consensus Scenario 參數（#389 §5.1）：前端「存成劇本」原封不動送進
-    既有 `POST /api/scenarios`；搜尋本身也用同一組參數跑分析。best／worst
-    不帶（#383 預設）。"""
+    """Consensus Scenario 參數（#389 §5.1）：搜尋用這組參數（全部選取的
+    家族）跑分析；每個結果列的 `scenario` 是同一組參數、但 `strategies`
+    只留該列家族（`rows_for_symbol`），前端「存成劇本」原封不動送進既有
+    `POST /api/scenarios`。best／worst 不帶（#383 預設）。"""
     return {"symbol": symbol, "target_price": item["mean"],
             "target_month": target_month, "strategies": list(families)}
 
@@ -105,7 +106,10 @@ def rows_for_symbol(view: dict, *, item: dict, scenario: dict) -> list[dict]:
             "target_return": rep["baseline_return"],
             "breakeven": candidate["breakeven"],
             "consensus": consensus_summary(item),
-            "scenario": scenario,
+            # 「存成劇本」只帶這一列的家族（#408 AC：詳細頁＝被點的那一列）；
+            # 單一家族劇本的冠軍就是這個代表候選——同一個候選池、同一個
+            # 排序鍵，只是分組粒度不同（`representative_candidates_by_family`）。
+            "scenario": {**scenario, "strategies": [family]},
         })
     return rows
 
