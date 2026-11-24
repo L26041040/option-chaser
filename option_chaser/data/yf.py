@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract,
                       describe_fetch_exception)
+from ..symbols import canonical_symbol, yahoo_symbol
 
 
 def _clean_float(value) -> float | None:
@@ -61,10 +62,11 @@ def available() -> bool:
 
 
 def fetch_chain(symbol: str) -> ChainSnapshot:
+    symbol = canonical_symbol(symbol)   # 快照掛 canonical 代號（#404）
     try:
         import yfinance as yf  # lazy: tests never import the network stack
 
-        t = yf.Ticker(symbol)
+        t = yf.Ticker(yahoo_symbol(symbol))   # Yahoo 只認 `BRK-B`
         spot = float(t.fast_info["last_price"])
         rows: list[dict] = []
         for expiry in t.options:

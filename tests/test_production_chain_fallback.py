@@ -203,3 +203,41 @@ def test_health_reports_the_configured_analyst_source_without_any_network_call()
                      analyst_source=YahooAnalystSource(transport=NoCalls()))
     body = TestClient(app).get("/api/health").json()
     assert body["opportunity"] == {"analyst_source": "yahoo-udh", "configured": True}
+
+
+# ---------- V2-01（#404）：「存成劇本」的股權類別代號 ----------
+
+def test_share_class_scenario_is_saved_canonical_and_each_source_gets_its_spelling(
+        monkeypatch):
+    """劇本建立時 `brk-b` 存成 canonical `BRK.B`；重算時 Cboe 收到 `BRK.B`、Yahoo
+    URL 用 `BRK-B`（真實錄下的 BRK-B 第一頁回放），結果掛 `BRK.B`。"""
+    monkeypatch.setattr(main_module, "ny_today", lambda: DAY)
+    transport = OptionsReplayTransport()
+    monkeypatch.setattr(yahoo_options, "fetch_chain",
+                        lambda symbol: YahooOptionsClient(transport).fetch_chain(
+                            symbol, now=lambda: RECORDED_AT))
+    monkeypatch.setattr(yf, "available", lambda: False)
+    asked_cboe: list[str] = []
+
+    def cboe(symbol):
+        asked_cboe.append(symbol)
+        raise FetchError(f"Cboe 抓取失敗（{symbol}）: HTTP 403")
+
+    storage = MemoryStorage()
+    client = TestClient(create_app(
+        identity_resolver=lambda: "solo", storage=storage, cboe_fetch=cboe,
+        rate_loader=_sample_rate_loader, dividend_loader=_sample_dividend_loader))
+    sc = client.post("/api/scenarios", json={**SCENARIO, "symbol": "brk-b",
+                                             "target_price": 600.0,
+                                             "target_month": "2026-11"})
+    assert sc.status_code == 201, sc.text
+    assert sc.json()["symbol"] == "BRK.B"
+    sid = sc.json()["id"]
+    r = client.post(f"/api/scenarios/{sid}/refresh")
+    assert asked_cboe == ["BRK.B"]
+    option_calls = transport.option_calls
+    assert option_calls and all("/v7/finance/options/BRK-B?" in u for u in option_calls)
+    assert r.status_code == 200, r.text
+    saved = storage.latest_result(sid, owner="solo")
+    assert saved.view["meta"]["source"] == "yahoo"
+    assert saved.view["meta"]["symbol"] == "BRK.B"

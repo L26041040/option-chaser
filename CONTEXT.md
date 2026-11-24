@@ -329,8 +329,14 @@ degradation／cleanup lifecycle 可驗證／CI 正常／storage 成長可
 相同。
 _Avoid_: 掃描器推薦、選股器
 
-**Search Universe（搜尋母體）** — 使用者選定的標的集合。
-_Avoid_: 股票池
+**Search Universe（掃描股票範圍）** — 使用者選定的標的集合：預設 **S&P 500 成分股**
+（repo 內帶版本日期的清單 `api_app/sp500_constituents.py`，#404），或自訂清單。舊的
+「大型股樣本」（`sample-large-cap`）已退役，舊設定一律讀成 S&P 500。
+_Avoid_: 股票池、搜尋母體
+
+**Canonical Symbol（標準代號）** — 系統內部存的股票代號寫法：股權類別用點（`BRK.B`、
+`BF.B`）。只有呼叫上游時才換成來源的寫法（Yahoo `BRK-B`、Cboe `BRK.B`），規則只在
+`option_chaser/symbols.py`。GOOGL 與 GOOG 是兩檔不同的股票。
 
 **Consensus Target（共識目標價）** — 某檔股票目前有效的個別分析師目標價的**平均**。
 _Avoid_: 目標價（單獨使用時會和劇本的 target_price 混淆）、中位目標價

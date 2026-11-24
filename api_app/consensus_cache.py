@@ -148,16 +148,21 @@ def detail_to_dict(s: ConsensusSnapshot) -> dict:
 
 def refresh_universe(storage: Storage, *,
                      cap: int = DEFAULT_REFRESH_SYMBOL_CAP) -> list[str]:
-    """每日更新的母體 = 大型股樣本 ∪ **目前權限為 SU／SA** 的 owner 的自訂
-    清單（#392；Normal 寫不進、也不會被併入——
-    `Storage.opportunity_custom_symbols()` 只回特權 owner 的清單）。
+    """每日更新的母體 = 預設掃描範圍（S&P 500 成分股，V2-01／#404）∪
+    **目前權限為 SU／SA** 的 owner 的自訂清單（#392；Normal 寫不進、也不會
+    被併入——`Storage.opportunity_custom_symbols()` 只回特權 owner 的清單）。
 
-    總數不超過 `cap`：樣本永遠排最前面，自訂清單依代號排序接在後面——
-    決定性，同一份資料每天選出同一批，不會因為某位使用者的清單很長就把
-    樣本擠出去。"""
-    sample = search_universe.resolve_universe(None).symbols
-    custom = storage.opportunity_custom_symbols()
-    return list(dict.fromkeys([*sample, *sorted(custom)]))[:cap]
+    總數不超過 `cap`（預設 200；成分股約 503 檔，超出的照實列為
+    `out_of_scope`——每日約 500 檔的排程與額度是 #403 的事，這裡不擴）。
+    順序決定誰先佔名額，而且是決定性的（同一份資料每天選出同一批）：
+    1. `REFRESH_PRIORITY`（原大型股樣本 50 檔，全是成分股）；
+    2. 自訂清單，canonical 化後依代號排序——維持 #392 起「自訂清單一定在
+       樣本之後、成分股其餘之前」的承諾，不會被 500 檔擠掉；
+    3. 其餘成分股，依清單順序。"""
+    custom = search_universe.canonical_symbols(storage.opportunity_custom_symbols())
+    default = search_universe.resolve_universe(None).symbols
+    ordered = [*search_universe.REFRESH_PRIORITY, *sorted(custom), *default]
+    return list(dict.fromkeys(ordered))[:cap]
 
 
 def out_of_scope(search_symbols: Sequence[str],
@@ -698,6 +703,8 @@ def consensus_view(storage: Storage, source: AnalystSource | None,
         "source": source_view,
         "universe": {"id": universe.id, "label": universe.label,
                      "provisional": universe.provisional,
+                     # 清單版本日期（S&P 500 成分股，#404）；自訂清單為 null。
+                     "version_date": universe.version_date,
                      "symbols": len(universe.symbols),
                      "with_data": len(with_data),
                      "insufficient": sum(1 for i in with_data

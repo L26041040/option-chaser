@@ -70,6 +70,18 @@ def test_fetch_dividends_yahoo_first():
     assert calls == [YAHOO_URL.format(symbol="TLT")]
 
 
+def test_share_class_dividends_are_requested_from_yahoo_with_the_hyphen():
+    """V2-01（#404）：Yahoo 只認 `BF-B`（`BF.B` 回 404）。"""
+    calls = []
+
+    def http_get(url, headers=None):
+        calls.append(url)
+        return _YAHOO_BODY
+
+    fetch_dividends("BF.B", TODAY, http_get=http_get)
+    assert calls == [YAHOO_URL.format(symbol="BF-B")]
+
+
 def test_yahoo_success_with_zero_dividends_is_not_a_failure():
     """研究 §8 第 2 層：確定無配息（YETI 這種）是成功，不是要備援的失敗
     ——`distributions` 為空 tuple，`source` 仍是 yahoo，不落到 FMP/Nasdaq。"""

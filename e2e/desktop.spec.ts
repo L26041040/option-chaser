@@ -1296,7 +1296,7 @@ test("桌面主劇本庫：批次選取後動作列同樣吸底（QA-FIX-4／QA-
 /* ---------- 設定頁（Settings／#124） ---------- */
 
 const OPPORTUNITY_SEARCH_DEFAULTS = {
-  universe_id: "sample-large-cap",
+  universe_id: "sp500",
   custom_symbols: [] as string[],
   percentile_max: 20,
   dispersion_max: 10,
@@ -1320,9 +1320,10 @@ const settingsView = {
   opportunity_search: OPPORTUNITY_SEARCH_DEFAULTS,
   opportunity_search_options: {
     universes: [
-      { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
-        provisional: true, symbol_count: 50 },
-      { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+      { id: "sp500", label: "S&P 500 成分股", provisional: false, symbol_count: 503,
+        version_date: "2026-11-08" },
+      { id: "custom", label: "自訂清單", provisional: false, symbol_count: null,
+        version_date: null },
     ],
     strategies: ["single-leg", "vertical-spread", "butterfly"],
     sorts: [{ id: "return", label: "股價達標時的策略報酬（高→低）" },

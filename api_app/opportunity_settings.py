@@ -21,9 +21,11 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from option_chaser.models import FAMILIES
+from option_chaser.symbols import canonical_symbol
 
 from . import search_universe
-from .search_universe import CUSTOM, CUSTOM_SYMBOLS_MAX, UNIVERSE_IDS
+from .search_universe import (CUSTOM, CUSTOM_SYMBOLS_MAX, LEGACY_SAMPLE_LARGE_CAP,
+                              UNIVERSE_IDS)
 
 DEFAULT_PERCENTILE_MAX = 20.0
 DEFAULT_DISPERSION_MAX = 10.0
@@ -57,11 +59,17 @@ def defaults() -> dict:
 
 def effective(stored: Mapping | None) -> dict:
     """已存的值疊在預設上——讀取端（GET、後續的共識清單／搜尋）一律用
-    這個，不各自處理「沒存過」的情況。不認得的鍵直接丟掉。"""
+    這個，不各自處理「沒存過」的情況。不認得的鍵直接丟掉。
+
+    遷移（V2-01／#404）：已退役的 `sample-large-cap` 讀成 `sp500`；舊的自訂
+    清單裡的 `BRK-B` 讀成 canonical `BRK.B`。只在讀取時換、不回寫——下一次
+    PUT 自然存成新值。"""
     out = defaults()
     for key, value in (stored or {}).items():
         if key in out:
             out[key] = value
+    out["universe_id"] = search_universe.normalize_universe_id(out["universe_id"])
+    out["custom_symbols"] = list(search_universe.canonical_symbols(out["custom_symbols"]))
     return out
 
 
@@ -95,6 +103,9 @@ class OpportunitySearchRequest(BaseModel):
     @field_validator("universe_id", mode="before")
     @classmethod
     def _universe(cls, v: Any) -> str:
+        # 舊前端還可能送已退役的大型股樣本：存成取代它的預設（#404）。
+        if v == LEGACY_SAMPLE_LARGE_CAP:
+            return search_universe.DEFAULT_UNIVERSE_ID
         if v not in UNIVERSE_IDS:
             raise ValueError(f"不支援的掃描股票範圍：{v}")
         return v
@@ -108,6 +119,7 @@ class OpportunitySearchRequest(BaseModel):
         for s in v:
             if not search_universe.is_valid_ticker(s):
                 raise ValueError(f"不合法的 ticker：{s}（請用大寫代號，例如 AAPL）")
+            s = canonical_symbol(s)              # BRK-B → BRK.B（#404）
             if s not in out:
                 out.append(s)
         if len(out) > CUSTOM_SYMBOLS_MAX:

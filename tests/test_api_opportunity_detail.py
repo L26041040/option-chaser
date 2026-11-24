@@ -227,3 +227,35 @@ def test_daily_refresh_uses_the_fetched_weekly_closes_to_clear_false_split_flags
         assert body["item"]["status"] == "ok", body["item"]["gate"]["reasons"]
         assert body["item"]["rules_version"] == "provisional-split-price"
         assert not [p for p in body["series"] if p["reason"] == "split_unresolved"]
+
+
+# ---------- V2-01（#404）：股權類別代號 ----------
+
+def test_share_class_custom_list_refreshes_from_yahoo_and_detail_accepts_both_spellings(
+        monkeypatch):
+    """自訂清單存 `BRK-B`、`BF.B` → canonical `BRK.B`／`BF.B`；cron 走真實 Yahoo
+    adapter（2026-11-24 錄下的 `BRK-B`／`BF-B` 回應回放）寫進快取；詳細頁用
+    `BRK-B` 或 `BRK.B` 查都是同一筆。"""
+    monkeypatch.setattr(main_module, "ny_today", lambda: DAY)
+    storage = MemoryStorage()
+    transport = ReplayTransport()
+    client = _client(storage, YahooAnalystSource(transport=transport))
+    r = client.put("/api/settings", json={
+        "market_data": _DEFAULT, "historical_iv": _DEFAULT,
+        "opportunity_search": {"universe_id": "custom",
+                               "custom_symbols": ["BRK-B", "BF.B", "GOOGL"]}})
+    assert r.status_code == 200, r.text
+    assert r.json()["opportunity_search"]["custom_symbols"] == ["BRK.B", "BF.B", "GOOGL"]
+    assert client.get("/api/cron/consensus-refresh", headers=CRON).status_code == 200
+    upstream = [u for u in transport.calls if "quoteSummary" in u]
+    assert any("/BRK-B?" in u for u in upstream) and any("/BF-B?" in u for u in upstream)
+    assert not any("/BRK.B?" in u or "/BF.B?" in u for u in transport.calls)
+
+    reader = _client(storage, NoUpstream())
+    for spelling in ("BRK-B", "BRK.B", "brk-b"):
+        item = _detail(reader, spelling)["item"]
+        assert item["symbol"] == "BRK.B"
+        assert item["as_of"] == DAY.isoformat()
+        assert item["status"] not in ("no_data", "source_error")
+    bf = _detail(reader, "BF-B")
+    assert bf["item"]["symbol"] == "BF.B" and bf["effective"]

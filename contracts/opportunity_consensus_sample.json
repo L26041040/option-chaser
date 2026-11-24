@@ -8,6 +8,7 @@
     "id": "custom",
     "label": "自訂清單",
     "provisional": false,
+    "version_date": null,
     "symbols": 7,
     "with_data": 5,
     "insufficient": 1,

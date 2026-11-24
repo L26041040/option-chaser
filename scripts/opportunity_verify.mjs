@@ -421,7 +421,7 @@ async function normalFlow(browser) {
       opportunity_search: { universe_id: "custom", custom_symbols: ["NORMX"] } } });
     const view = (await api(page, "GET", "/api/settings")).body;
     check(`${label} Normal：寫 opportunity_search（自訂清單）被拒 403，讀回仍是預設`,
-          write.status === 403 && view?.opportunity_search?.universe_id === "sample-large-cap"
+          write.status === 403 && view?.opportunity_search?.universe_id === "sp500"
           && view.opportunity_search.custom_symbols.length === 0,
           { status: write.status, universe: view?.opportunity_search?.universe_id });
     if (label === "手機") check("手機 Normal：首頁無水平捲動", await noHorizontalScroll(page));

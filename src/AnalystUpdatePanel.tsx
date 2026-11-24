@@ -181,6 +181,10 @@ export default function AnalystUpdatePanel({
         </span>
       </h2>
       <ul className="opp-detail-facts opp-status-facts" aria-label="資料狀態">
+        <StatusFact label="掃描股票範圍">
+          {consensus.universe.label}
+          {consensus.universe.version_date && `（版本 ${consensus.universe.version_date}）`}
+        </StatusFact>
         <StatusFact label="資料來源">
           {consensus.source.is_fixture ? "測試資料（非真實市場資料）" : "真實分析師資料"}
         </StatusFact>

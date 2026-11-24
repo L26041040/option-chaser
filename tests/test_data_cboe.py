@@ -121,6 +121,22 @@ def test_fetch_chain_uses_injected_http_get():
         "https://cdn.cboe.com/api/global/delayed_quotes/options/TLT.json"]
 
 
+@pytest.mark.parametrize("given", ["BRK.B", "BRK-B", "brk.b"])
+def test_share_class_is_requested_with_the_dot_and_labelled_canonical(given):
+    """V2-01（#404）：Cboe 與 canonical 同為點寫法（`BRK.B`）；使用者輸入
+    `BRK-B` 也送 `BRK.B`，快照掛 canonical。"""
+    urls = []
+
+    def fake_get(url):
+        urls.append(url)
+        return json.dumps(PAYLOAD)
+
+    snap = fetch_chain(given, http_get=fake_get)
+    assert urls == [
+        "https://cdn.cboe.com/api/global/delayed_quotes/options/BRK.B.json"]
+    assert snap.symbol == "BRK.B"
+
+
 def test_fetch_chain_http_failure_raises_fetch_error():
     def fake_get(url):
         raise OSError("blocked")

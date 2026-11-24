@@ -26,12 +26,14 @@ from api_app import main as main_module
 from api_app.analyst_source import ProviderResult
 from api_app.consensus_cache import RefreshPolicy
 from api_app.main import create_app
-from api_app.search_universe import resolve_universe
+from api_app.search_universe import REFRESH_PRIORITY
 from api_app.storage.memory import MemoryStorage
 from option_chaser.consensus import AnalystTargetRecord
 from tests._role_session import grant_role
 
-SAMPLE = list(resolve_universe(None).symbols)
+# 每日更新上限固定成 50（`_client` 預設）時，更新母體＝優先更新的 50 檔大型股
+#（V2-01／#404：預設範圍改成 S&P 500 後，這些測試只關心更新機制本身）。
+SAMPLE = list(REFRESH_PRIORITY)
 T0 = 1_790_000_000.0          # 任意固定的 UTC epoch
 UPDATE = "/api/opportunity/consensus/update"
 STATUS = "/api/opportunity/consensus/status"
@@ -89,6 +91,7 @@ def _client(source, *, clock=None, policy=None, role="superuser", storage=None,
     storage = storage or MemoryStorage()
     if role != "normal":
         grant_role(storage, role, owner_id="solo")
+    kw.setdefault("consensus_refresh_symbol_cap", len(SAMPLE))
     app = create_app(identity_resolver=lambda: "solo", storage=storage,
                      analyst_source=source, cron_secret="test-secret",
                      clock=clock or Clock(),

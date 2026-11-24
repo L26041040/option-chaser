@@ -676,6 +676,7 @@ function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
       </h2>
       <p className="opp-facts">
         <span>共 {u.symbols} 檔</span>
+        {u.version_date && <span>版本 {u.version_date}</span>}
         <span>有資料 {u.with_data} 檔</span>
         <span>資料不足 {u.insufficient} 檔</span>
         <span>資料日期 {u.as_of ?? "—"}</span>

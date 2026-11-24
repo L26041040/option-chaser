@@ -36,6 +36,7 @@ from option_chaser.models import (AnalysisParams, ChainSnapshot, FAMILIES,
                                   FetchError, ParamError, RateLimitedError,
                                   STRATEGIES, normalize_families, subtypes_of)
 from option_chaser.service import DividendLoader, RateCurveLoader
+from option_chaser.symbols import canonical_symbol
 from option_chaser.timeframe import (TargetMonth, calendar_anchor,
                                      ensure_month_open, month_is_over)
 
@@ -2086,7 +2087,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     def cron_consensus_refresh(request: Request) -> dict:
         """每日一次（`vercel.json` crons）。來源未設定時什麼都不做。
 
-        母體 = 大型股樣本 ∪ SU／SA 的自訂清單（總數有上限）；與 SU 的「更新分析師
+        母體 = S&P 500 成分股 ∪ SU／SA 的自訂清單（總數有上限，#404）；與 SU 的「更新分析師
         資料」同一套核心（`_refresh_consensus()`）：成功的同一交易日不再抓、
         失敗的依重試規則、每日上游上限、處理中標記。一次呼叫受
         `refresh_run_budget` 約束，跑不完的由下一次觸發接續（游標＝每檔的
@@ -3037,7 +3038,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         # 要看哪幾類策略——`_MVP_STRATEGIES` 這個寫死的預設值退場，
         # 改存使用者實際勾選的 family 集合（`normalize_families()` 去重
         # 保序，pydantic `Literal[FAMILIES]` 已經擋掉白名單外的字串）。
-        sc = Scenario(id=uuid.uuid4().hex[:12], symbol=req.symbol.upper(),
+        sc = Scenario(id=uuid.uuid4().hex[:12], symbol=canonical_symbol(req.symbol),
                       direction=_MVP_DIRECTION, target_price=req.target_price,
                       target_month=req.target_month, notes=req.notes,
                       strategies=normalize_families(tuple(req.strategies)),
@@ -4008,7 +4009,8 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         後的全站暫停中 429（`consensus_rate_limited`，帶 `rate_limited_until`），其餘
         （今天已成功、冷卻中、重試用完、別人正在處理）409
         （`consensus_not_retryable`，帶第一檔的 `state`／`next_retry_at` 與
-        每一檔的 `skipped`）。代號先去空白、轉大寫再比對更新母體。"""
+        每一檔的 `skipped`）。代號先 canonical 化（去空白、轉大寫、`BRK-B` →
+        `BRK.B`，#404）再比對更新母體。"""
         _require_opportunity_role()
         if analyst_source is None:
             raise HTTPException(status_code=409,
@@ -4016,7 +4018,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         universe = _consensus_update_universe()
         symbols = universe
         if body.symbols is not None:
-            symbols = list(dict.fromkeys(s.strip().upper() for s in body.symbols))
+            symbols = list(dict.fromkeys(canonical_symbol(s) for s in body.symbols))
             allowed = set(universe)
             outside = [s for s in symbols if s not in allowed]
             if outside:
@@ -4078,7 +4080,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         D 序列與合格點數、不合格原因。只讀全站共識快取、不打上游；`item`
         與共識清單同一份（含依這位使用者門檻的 `gate`）。"""
         _require_opportunity_role()
-        ticker = symbol.strip().upper()
+        ticker = canonical_symbol(symbol)    # BRK-B → BRK.B（#404）
         if not search_universe.is_valid_ticker(ticker):
             raise HTTPException(status_code=400, detail="股票代號格式不正確")
         stored = _db().get_settings(owner=identity_resolver())
@@ -4133,7 +4135,7 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if body.symbols is None:
             requested = list(selected)
         else:
-            requested = list(dict.fromkeys(body.symbols))
+            requested = list(dict.fromkeys(canonical_symbol(s) for s in body.symbols))
             outside = [s for s in requested if s not in selected]
             if outside:
                 raise HTTPException(

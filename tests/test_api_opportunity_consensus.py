@@ -21,6 +21,8 @@ from fastapi.testclient import TestClient
 
 from api_app import main as main_module
 from api_app.analyst_source import FixtureAnalystSource, ProviderResult
+from api_app import consensus_cache, sp500_constituents
+from api_app.search_universe import REFRESH_PRIORITY
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from option_chaser.consensus import AnalystTargetRecord
@@ -95,6 +97,9 @@ def test_unconfigured_source_cron_is_skipped_and_touches_nothing():
 # ---------- 固定測試資料來源 ----------
 
 def _fixture_client(storage=None, *, source=None, **kw):
+    """SU 的自訂清單 AAA…GGG。更新母體上限固定成 57＝優先更新的 50 檔＋這 7 檔
+    （V2-01／#404：預設範圍改成 S&P 500 後，這些測試只關心更新機制本身）。"""
+    kw.setdefault("consensus_refresh_symbol_cap", len(REFRESH_PRIORITY) + 7)
     storage = storage or MemoryStorage()
     client = _app(storage, source=source or FixtureAnalystSource(FIXTURE), **kw)
     _use_custom_universe(client)
@@ -108,8 +113,8 @@ def _run_cron(client):
 
 
 def _sample_symbols():
-    from api_app.search_universe import resolve_universe
-    return resolve_universe(None).symbols
+    """每日更新母體裡排最前面的 50 檔（原大型股樣本，#404 起是 S&P 500 的子集）。"""
+    return REFRESH_PRIORITY
 
 
 def test_fixture_source_is_flagged_as_fixture_in_the_response():
@@ -247,13 +252,26 @@ def test_everything_in_scope_reports_no_out_of_scope_symbols():
     status = client.get("/api/opportunity/consensus/status").json()
     assert status["out_of_scope"] == 0 and status["out_of_scope_symbols"] == []
 
-def test_default_universe_is_the_provisional_sample():
+def test_default_universe_is_the_sp500_with_its_version_date():
+    """V2-01（#404）：預設掃描範圍是 S&P 500 成分股（不是暫定清單），帶版本日期；
+    超出每日更新上限（200）的成分股照實列為 out_of_scope（擴量是 #403 的事）。"""
     storage = MemoryStorage()
     client = _app(storage, source=FixtureAnalystSource(FIXTURE))
     body = _consensus(client)
-    assert body["universe"]["id"] == "sample-large-cap"
-    assert body["universe"]["provisional"] is True
-    assert body["universe"]["symbols"] == len(body["items"]) == 50
+    total = len(sp500_constituents.CONSTITUENTS)
+    assert body["universe"]["id"] == "sp500"
+    assert body["universe"]["label"] == "S&P 500 成分股"
+    assert body["universe"]["provisional"] is False
+    assert body["universe"]["version_date"] == sp500_constituents.VERSION
+    assert body["universe"]["symbols"] == len(body["items"]) == total
+    assert body["universe"]["out_of_scope"] == total - 200
+    symbols = [i["symbol"] for i in body["items"]]
+    assert {"GOOGL", "GOOG", "BRK.B", "BF.B"} <= set(symbols)
+
+
+def test_custom_universe_reports_no_version_date():
+    client, _ = _fixture_client()
+    assert _consensus(client)["universe"]["version_date"] is None
 
 
 def test_thresholds_and_rules_are_reported():
@@ -340,7 +358,8 @@ def _seed_custom_list(storage, owner_id, role, symbols):
 def test_cron_merges_custom_lists_only_from_superuser_and_superadmin_owners():
     storage = MemoryStorage()
     source = CountingSource(FixtureAnalystSource(FIXTURE))
-    client = _app(storage, source=source)
+    # 上限 52：優先 50 檔之後只剩兩個名額——兩份特權清單都排在其餘成分股前面。
+    client = _app(storage, source=source, consensus_refresh_symbol_cap=52)
     _seed_custom_list(storage, "su-owner", "superuser", ["SUONE"])
     _seed_custom_list(storage, "sa-owner", "superadmin", ["SAONE"])
     _seed_custom_list(storage, "normal-owner", "normal", ["NORMONE"])
@@ -357,6 +376,19 @@ def test_cron_universe_is_capped_with_the_sample_first_then_sorted_custom():
     # 樣本 50 檔（含 AAPL）先；自訂清單去重後依代號排序 BBB、MMM、ZZZ，只剩 2 個名額。
     assert sorted(source.calls) == sorted({*_sample_symbols(), "BBB", "MMM"})
     assert body["remaining"] == []
+
+
+def test_update_universe_order_is_priority_then_custom_then_the_rest_of_sp500():
+    """#404：每日更新上限仍是 200（約 500 檔的排程是 #403 的事）。誰先佔名額：
+    優先 50 檔 → SU/SA 自訂清單（canonical、依代號排序）→ 其餘成分股（清單順序）。"""
+    storage = MemoryStorage()
+    _seed_custom_list(storage, "su-owner", "superuser", ["ZZZ", "BRK-B", "AAPL"])
+    rest = [s for s, _ in sp500_constituents.CONSTITUENTS
+            if s not in REFRESH_PRIORITY and s != "BRK.B"]
+    got = consensus_cache.refresh_universe(storage, cap=55)
+    assert got == [*REFRESH_PRIORITY, "BRK.B", "ZZZ", *rest[:3]]
+    full = consensus_cache.refresh_universe(storage)
+    assert len(full) == 200 == consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP
 
 
 def test_cron_universe_cap_defaults_to_200():
