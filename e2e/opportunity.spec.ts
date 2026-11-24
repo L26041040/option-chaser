@@ -7,7 +7,7 @@
  * 續跑回來的）→ 切換排序 → 存成劇本 → 進詳細頁；另測來源未設定、
  * 後端 403、Normal 直接打網址，以及兩種寬度都沒有水平捲動。
  */
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -504,4 +504,128 @@ test("失敗（#401）：冷卻中停用並倒數，時間到按下真的重試�
   await expect(page.getByRole("button", { name: "搜尋選擇權" })).toBeEnabled();
   await noHorizontalScroll(page);
   expect(updates).toHaveLength(1);
+});
+
+// ---------- V2-04（#406）：指標說明 ⓘ ----------
+
+/** ⓘ 的說明卡（`aria-describedby` 指向的 role=tooltip，展開時才存在）。 */
+async function tooltipOf(page: Page, button: Locator) {
+  await expect(button).toHaveAttribute("aria-describedby", /.+/);
+  const id = await button.getAttribute("aria-describedby");
+  return page.locator(`[id="${id}"]`);
+}
+
+/** 說明卡整張在視窗內，沒有被裁切，也沒有撐出橫向捲動。 */
+async function expectInsideViewport(page: Page, tip: Locator) {
+  await expect(tip).toBeVisible();
+  const box = (await tip.boundingBox())!;
+  const { vw, vh } = await page.evaluate(() => ({
+    vw: document.documentElement.clientWidth, vh: window.innerHeight }));
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(vw);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(vh);
+  await noHorizontalScroll(page);
+}
+
+/** 桌面懸停開；手機點按開。 */
+async function openByPointer(button: Locator) {
+  if (isDesktop()) await button.hover();
+  else await button.tap();
+}
+
+/** 桌面滑鼠移開；手機再點一次。 */
+async function closeByPointer(page: Page, button: Locator) {
+  if (isDesktop()) await page.mouse.move(1, 1);
+  else await button.tap();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+}
+
+async function openOpportunityWithResults(page: Page) {
+  await routeBase(page, "superuser");
+  await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: consensus }));
+  await page.route("**/api/opportunity/consensus-detail/*", (route) => {
+    const symbol = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop()!);
+    return route.fulfill({ json: { ...detail, symbol, item: { ...detail.item, symbol } } });
+  });
+  await routeSearch(page);
+  await page.goto("/#/opportunity");
+  await expect(page.getByRole("region", { name: "符合條件的股票" })
+    .getByRole("listitem", { name: "AAA" })).toBeVisible();
+}
+
+test("指標說明（#406）：桌面懸停／手機點按開關，說明有定義、方向、計算口徑，且不被裁切", async ({ page }) => {
+  await openOpportunityWithResults(page);
+  const selected = page.getByRole("region", { name: "符合條件的股票" });
+  const icon = selected.getByRole("button", { name: "分析師分歧率說明" });
+  await expect(icon).toBeVisible();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+  await openByPointer(icon);
+  const tip = await tooltipOf(page, icon);
+  await expect(tip).toContainText("定義");
+  await expect(tip).toContainText("方向越低，券商看法越一致");
+  await expect(tip).toContainText("計算口徑");
+  await expectInsideViewport(page, tip);
+  await closeByPointer(page, icon);
+
+  if (!isDesktop()) {
+    // 手機：打開後點外面關閉。
+    await icon.tap();
+    await expect(page.getByRole("tooltip")).toHaveCount(1);
+    await page.getByRole("heading", { name: "機會搜尋" }).tap();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+  }
+
+  // 清單上每一個說明都能打開、都在視窗內（含靠右邊的那幾顆）。
+  for (const name of ["平均目標價說明", "有效券商數說明", "分歧度歷史排序（PR）說明",
+                      "資料日期說明"]) {
+    const b = selected.getByRole("button", { name });
+    await openByPointer(b);
+    await expectInsideViewport(page, await tooltipOf(page, b));
+    await closeByPointer(page, b);
+  }
+
+  // 結果表裡（桌面表格／手機卡片）的共識明細：說明卡不被表格裁切。
+  await page.getByRole("button", { name: "搜尋選擇權" }).click();
+  const results = page.getByRole("region", { name: "搜尋結果" });
+  const row = results.getByRole("row", { name: /^AAA Long Call/ });
+  await row.getByRole("button", { name: "AAA 共識詳細資料" }).click();
+  const pr = results.getByRole("list", { name: "共識數值" })
+    .getByRole("button", { name: "分歧度歷史排序（PR）說明" });
+  await openByPointer(pr);
+  const prTip = await tooltipOf(page, pr);
+  await expect(prTip).toContainText("PR88＝比過去 88% 的月份更集中（前 12%）");
+  await expectInsideViewport(page, prTip);
+  await closeByPointer(page, pr);
+
+  const cost = results.getByRole("button", { name: "成本、最大損失說明" });
+  await openByPointer(cost);
+  const costTip = await tooltipOf(page, cost);
+  await expect(costTip).toContainText("1 口 = 100 股");
+  await expectInsideViewport(page, costTip);
+});
+
+test("指標說明（#406）：鍵盤可聚焦，Enter 開、Esc 關且焦點留在圖示，Tab 離開收起", async ({ page }) => {
+  await openOpportunityWithResults(page);
+  const icon = page.getByRole("region", { name: "掃描股票範圍" })
+    .getByRole("button", { name: "掃描股票範圍說明" });
+  await icon.focus();
+  await expect(icon).toBeFocused();
+  const tip = await tooltipOf(page, icon);
+  await expect(tip).toBeVisible();
+  await expect(tip).toHaveAttribute("role", "tooltip");
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(icon).toBeFocused();
+  await expect(icon).toHaveAttribute("aria-expanded", "false");
+
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("tooltip")).toHaveCount(1);
+  await expect(icon).toHaveAttribute("aria-expanded", "true");
+  await expectInsideViewport(page, await tooltipOf(page, icon));
+
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
 });

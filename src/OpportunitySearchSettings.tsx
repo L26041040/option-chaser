@@ -34,6 +34,8 @@ import {
   prThresholdLabel,
 } from "./dispersionRank";
 import { FAMILY_LABELS } from "./family";
+import MetricInfo from "./MetricInfo";
+import type { MetricHelpKey } from "./metricHelp";
 
 /** 區塊的 DOM id：機會搜尋頁「調整門檻」連到 `#/settings/opportunity`
  *  時，手機版設定頁捲到這裡（OS-05／#394）。 */
@@ -46,6 +48,8 @@ const THRESHOLDS: Array<{
   key: Threshold;
   label: string;
   hint: string;
+  /** ⓘ 說明（V2-04／#406）。 */
+  help: MetricHelpKey;
   /** 已存的值 → 輸入框的值。 */
   toInput: (stored: number) => number;
   /** 輸入框的字串 → 要存的值（不是數字就原字串照送，讓後端回訊息）。 */
@@ -57,6 +61,7 @@ const THRESHOLDS: Array<{
     key: "percentile_max",
     label: "分歧度歷史排序門檻：PR ≥",
     hint: PR_HISTORY_EXPLAINER,
+    help: "dispersionRank",
     toInput: prInputFromPercentileMax,
     fromInput: percentileMaxFromPrInput,
     describe: prThresholdLabel,
@@ -65,6 +70,7 @@ const THRESHOLDS: Array<{
     key: "dispersion_max",
     label: "分析師分歧率上限（%）",
     hint: "分析師目標價的標準差 ÷ 平均",
+    help: "dispersionRate",
     toInput: (stored) => stored,
     fromInput: numberOrRaw,
     describe: (stored) => `${stored}%`,
@@ -191,9 +197,12 @@ function OpportunitySearchSettingsForm({
              id={OPPORTUNITY_SETTINGS_ID}>
       <h3 className="settings-usage-title">機會搜尋</h3>
 
-      {THRESHOLDS.map(({ key, label, hint, describe }) => (
+      {THRESHOLDS.map(({ key, label, hint, help, describe }) => (
         <div className="settings-field" key={key}>
-          <label className="caption" htmlFor={`opp-${key}`}>{label}</label>
+          <span className="settings-label-row">
+            <label className="caption" htmlFor={`opp-${key}`}>{label}</label>
+            <MetricInfo metric={help} />
+          </span>
           <div className="settings-threshold-row">
             <input
               id={`opp-${key}`}
@@ -220,8 +229,11 @@ function OpportunitySearchSettingsForm({
         </div>
       ))}
 
-      <fieldset className="settings-fieldset">
-        <legend className="caption">掃描股票範圍</legend>
+      <fieldset className="settings-fieldset" aria-labelledby="opp-universe-legend">
+        <legend className="caption settings-label-row">
+          <span id="opp-universe-legend">掃描股票範圍</span>
+          <MetricInfo metric="scanUniverse" />
+        </legend>
         {options.universes.map((u) => (
           <label className="settings-choice" key={u.id}>
             <input

@@ -452,15 +452,18 @@ test("Crossover Boundary（#116；SW-12／#342 起主畫面精簡）：手機 vi
   // SW-12（#342）：comparator 身分／成本／兩側各自較優的完整說明收進
   // ⓘ——預設不可見，focus 到 `InfoTooltip` 按鈕才看得到，不是常駐 UI。
   const infoButton = mainChart.getByRole("button", { name: "分界怎麼算" });
-  await expect(mainChart.getByText(/報酬相等的分界/)).not.toBeVisible();
+  await expect(page.getByText(/報酬相等的分界/)).not.toBeVisible();
   await infoButton.focus();
-  await expect(mainChart.getByText(/格子是 Spread 報酬率/)).toBeVisible();
-  await expect(mainChart.getByText(/報酬相等的分界/)).toBeVisible();
-  await expect(mainChart.getByText(/Long Call|Long Put/).first()).toBeVisible();
+  // V2-04（#406）：說明卡 portal 到 body（不被捲動容器裁切），用
+  // `aria-describedby` 找到它。
+  const tip = page.locator(`[id="${await infoButton.getAttribute("aria-describedby")}"]`);
+  await expect(tip.getByText(/格子是 Spread 報酬率/)).toBeVisible();
+  await expect(tip.getByText(/報酬相等的分界/)).toBeVisible();
+  await expect(tip.getByText(/Long Call|Long Put/).first()).toBeVisible();
   // QA 修正：兩側各是誰較高必須明講，而且方向由實際矩陣算出來
   // ——所以只鎖「X 較高，Y 較高」這個句型，不寫死是哪一端。
-  await expect(mainChart.locator(".crossover-sides")).toBeVisible();
-  await expect(mainChart.locator(".crossover-sides"))
+  await expect(tip.locator(".crossover-sides")).toBeVisible();
+  await expect(tip.locator(".crossover-sides"))
     .toHaveText(/Spread 較高，.*(Long Call|Long Put) 較高/);
 
   // 疊加邊界標示不能破壞既有的橫向捲動與兩端 sticky 欄位行為
