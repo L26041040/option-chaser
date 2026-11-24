@@ -569,6 +569,18 @@ def test_consensus_snapshot_roundtrips(storage):
     assert storage.latest_consensus_snapshots(["AAA"], source="fixture") == {"AAA": rec}
 
 
+def test_consensus_snapshot_quote_field_roundtrips_without_schema_change(storage):
+    """V2-05（#407）：目前股價存在快照 JSON 的 `quote` 鍵（additive，不加欄位），
+    兩個 backend 讀回一模一樣。"""
+    rec = _consensus_record()
+    rec.snapshot["quote"] = {"price": "125.53", "at": "2026-11-20T21:00:01+00:00",
+                             "date": "2026-11-20", "kind": "close",
+                             "split_basis_mismatch": False}
+    storage.save_consensus_snapshot(rec)
+    got = storage.latest_consensus_snapshots(["AAA"], source="fixture")["AAA"]
+    assert got.snapshot["quote"] == rec.snapshot["quote"]
+
+
 def test_consensus_snapshots_keep_one_row_per_trading_day_and_return_the_latest(storage):
     storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-25"))
     storage.save_consensus_snapshot(_consensus_record(as_of="2026-09-28"))

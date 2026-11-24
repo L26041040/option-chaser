@@ -25,6 +25,7 @@ import MetricInfo from "./MetricInfo";
 import type { MetricHelpKey } from "./metricHelp";
 import { gateFailureReasons, ratioPct, reasonText, STATUS_LABELS } from "./opportunity";
 import { money } from "./scenarios";
+import { priceText, upsideText } from "./targetUpside";
 
 type Load =
   | { state: "loading" }
@@ -141,6 +142,8 @@ function Facts({ item, data }: { item: ConsensusItem; data: OpportunityConsensus
   return (
     <ul className="opp-detail-facts" aria-label="共識數值">
       <Fact label="平均目標價" value={moneyOrDash(item.mean)} help="meanTarget" />
+      <Fact label="目前股價" value={priceText(item)} help="currentPrice" />
+      <Fact label="目標漲跌幅" value={upsideText(item)} help="targetUpside" />
       <Fact label="標準差" value={moneyOrDash(item.stdev)} />
       <Fact label="分析師分歧率（標準差 ÷ 平均）" value={ratioPct(item.dispersion)}
             help="dispersionRate" />

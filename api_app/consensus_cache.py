@@ -45,6 +45,7 @@ from option_chaser import consensus
 from option_chaser.consensus import ConsensusCrossCheck, ConsensusRules, ConsensusSnapshot
 
 from . import search_universe
+from .price_quote import quote_record, upside_fields
 from .opportunity_settings import DEFAULT_DISPERSION_MAX, DEFAULT_PERCENTILE_MAX
 from .analyst_source import AnalystSource
 from .storage import (ConsensusDetailRecord, ConsensusRefreshState,
@@ -366,9 +367,13 @@ def _refresh_one(storage: Storage, source: AnalystSource, symbol: str,
             coverage=result.coverage, source=source.name,
             cross_check=result.cross_check, computed_at=at,
             weekly_closes=result.weekly_closes)
+        stored = snapshot_to_dict(snap)
+        # V2-05（#407）：同一次抓取的目前股價跟快照一起存（JSON 欄位，additive；
+        # 舊快照沒有這個鍵 → 畫面「尚未取得股價」）。
+        stored["quote"] = quote_record(result.quote, result.splits, today)
         storage.save_consensus_snapshot(ConsensusSnapshotRecord(
             symbol=symbol, as_of=day, source=source.name,
-            is_fixture=bool(source.is_fixture), snapshot=snapshot_to_dict(snap),
+            is_fixture=bool(source.is_fixture), snapshot=stored,
             computed_at=at.isoformat()))
         save_detail(storage, source, snap)
         next_retry_at, last_success_at = None, at.isoformat()
@@ -584,9 +589,11 @@ def _gate_view(gate: consensus.GateResult) -> dict:
 
 def _item(symbol: str, status: str, *, reasons: Sequence[str], gate: dict,
           snap: ConsensusSnapshot | None = None,
-          target_month: str | None = None) -> dict:
+          target_month: str | None = None,
+          quote: dict | None = None, today: date | None = None) -> dict:
     """清單項目的唯一形狀（有無 Snapshot 都走這裡，鍵不會分家）。沒有
-    Snapshot 時數值一律 `None`、人數與歷史點數為 0。"""
+    Snapshot 時數值一律 `None`、人數與歷史點數為 0。股價欄位（`price`…
+    `target_upside_reason`，V2-05／#407）見 `price_quote.upside_fields()`。"""
     def number(name: str) -> float | None:
         return _decimal_to_float(getattr(snap, name)) if snap else None
     return {"symbol": symbol, "status": status,
@@ -603,7 +610,8 @@ def _item(symbol: str, status: str, *, reasons: Sequence[str], gate: dict,
             "reasons": list(reasons), "gate": gate,
             "target_month": target_month,
             "rules_version": snap.rules_version if snap else None,
-            "refresh_error": None}
+            "refresh_error": None,
+            **upside_fields(quote, snap.mean if snap else None, today)}
 
 
 def _empty_item(symbol: str, status: str, reason: str) -> dict:
@@ -613,14 +621,15 @@ def _empty_item(symbol: str, status: str, reason: str) -> dict:
 
 
 def _snapshot_item(snap: ConsensusSnapshot, today: date, p_max: Decimal,
-                   d_max: Decimal, target_month_rule: str) -> dict:
+                   d_max: Decimal, target_month_rule: str,
+                   quote: dict | None = None) -> dict:
     try:
         month = consensus.target_month(snap, today, target_month_rule)
     except ValueError:
         month = None
     return _item(snap.symbol, snap.status, reasons=snap.reasons, snap=snap,
                  gate=_gate_view(consensus.evaluate_gate(snap, p_max, d_max)),
-                 target_month=month)
+                 target_month=month, quote=quote, today=today)
 
 
 def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
@@ -640,7 +649,7 @@ def _items(storage: Storage, source: AnalystSource, symbols: Sequence[str],
                          if failure else _empty_item(symbol, "no_data", _NOT_REFRESHED))
             continue
         item = _snapshot_item(snapshot_from_dict(rec.snapshot), today, p_max, d_max,
-                              target_month_rule)
+                              target_month_rule, quote=rec.snapshot.get("quote"))
         if failure is not None and failure.attempted_day > rec.as_of:
             # 最新一次嘗試失敗：沿用上一份成功資料，as_of 照實是那一天。
             item["refresh_error"] = {"day": failure.attempted_day,

@@ -64,7 +64,13 @@
       },
       "target_month": "2027-09",
       "rules_version": "provisional-split-price",
-      "refresh_error": null
+      "refresh_error": null,
+      "price": 100.0,
+      "price_date": "2026-09-25",
+      "price_at": "2026-09-25T20:00:01+00:00",
+      "price_kind": "close",
+      "target_upside_pct": 20.0,
+      "target_upside_reason": null
     },
     {
       "symbol": "BBB",
@@ -92,7 +98,13 @@
       },
       "target_month": "2027-09",
       "rules_version": "provisional-split-price",
-      "refresh_error": null
+      "refresh_error": null,
+      "price": 110.0,
+      "price_date": "2026-09-25",
+      "price_at": "2026-09-25T20:00:01+00:00",
+      "price_kind": "close",
+      "target_upside_pct": -9.1,
+      "target_upside_reason": null
     },
     {
       "symbol": "CCC",
@@ -120,7 +132,13 @@
       },
       "target_month": "2027-09",
       "rules_version": "provisional-split-price",
-      "refresh_error": null
+      "refresh_error": null,
+      "price": 100.0,
+      "price_date": "2026-09-25",
+      "price_at": "2026-09-25T20:00:01+00:00",
+      "price_kind": "close",
+      "target_upside_pct": 0.0,
+      "target_upside_reason": null
     },
     {
       "symbol": "DDD",
@@ -152,7 +170,13 @@
       },
       "target_month": "2027-09",
       "rules_version": "provisional-split-price",
-      "refresh_error": null
+      "refresh_error": null,
+      "price": 100.0,
+      "price_date": "2026-09-21",
+      "price_at": "2026-09-21T20:00:01+00:00",
+      "price_kind": "close",
+      "target_upside_pct": null,
+      "target_upside_reason": "price_stale"
     },
     {
       "symbol": "EEE",
@@ -178,7 +202,13 @@
       },
       "target_month": "2027-09",
       "rules_version": "provisional-split-price",
-      "refresh_error": null
+      "refresh_error": null,
+      "price": 440.0,
+      "price_date": "2025-05-30",
+      "price_at": "2025-05-30T20:00:01+00:00",
+      "price_kind": "close",
+      "target_upside_pct": null,
+      "target_upside_reason": "split_mismatch"
     },
     {
       "symbol": "FFF",
@@ -210,7 +240,13 @@
       },
       "target_month": "2027-09",
       "rules_version": "provisional-split-price",
-      "refresh_error": null
+      "refresh_error": null,
+      "price": 150.0,
+      "price_date": "2026-09-25",
+      "price_at": "2026-09-25T20:00:01+00:00",
+      "price_kind": "close",
+      "target_upside_pct": null,
+      "target_upside_reason": "no_mean"
     },
     {
       "symbol": "GGG",
@@ -240,7 +276,13 @@
       },
       "target_month": null,
       "rules_version": null,
-      "refresh_error": null
+      "refresh_error": null,
+      "price": null,
+      "price_date": null,
+      "price_at": null,
+      "price_kind": null,
+      "target_upside_pct": null,
+      "target_upside_reason": "no_price"
     }
   ]
 }

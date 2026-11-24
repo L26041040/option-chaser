@@ -35,6 +35,8 @@ from option_chaser.data.yahoo_analyst import (YahooClient, YahooError,
                                               split_basis_through)
 from option_chaser.symbols import canonical_symbol
 
+from .price_quote import PriceQuote
+
 COVERAGES = ("complete", "partial", "unknown")
 
 
@@ -55,6 +57,9 @@ class ProviderResult:
     # 疑似分割的價格佐證（`compute_snapshot(weekly_closes=)`）：(收盤可得日,
     # 已調整全部已知分割的週線收盤)。`None`＝來源沒有股價，引擎維持保守判斷。
     weekly_closes: tuple[tuple[date, Decimal], ...] | None = None
+    # V2-05（#407）：股票掃描階段取得的目前股價與它的時間——Yahoo 沿用同一次
+    # chart 呼叫的 meta，不多打上游。`None`＝來源沒有股價（畫面「尚未取得股價」）。
+    quote: PriceQuote | None = None
 
     def __post_init__(self) -> None:
         if self.coverage not in COVERAGES:
@@ -94,6 +99,7 @@ class FixtureAnalystSource:
         # 檔案沒寫抓取時間的紀錄：以這次抓取的日期（UTC 零時）為準——A3 的
         # 同日決勝靠 retrieved_at，不能留空。
         fetched = datetime.combine(today, time(0), tzinfo=timezone.utc)
+        quote = entry.get("quote")
         return ProviderResult(
             records=tuple(
                 AnalystTargetRecord(
@@ -116,7 +122,9 @@ class FixtureAnalystSource:
             history_from=date.fromisoformat(history_from) if history_from else None,
             cross_check=ConsensusCrossCheck(
                 consensus_mean_from_source=Decimal(cross["consensus_mean_from_source"]),
-                n_from_source=cross.get("n_from_source")) if cross else None)
+                n_from_source=cross.get("n_from_source")) if cross else None,
+            quote=(PriceQuote(Decimal(quote["price"]), datetime.fromisoformat(quote["at"]))
+                   if quote else None))
 
 
 class YahooAnalystSource:
@@ -131,6 +139,8 @@ class YahooAnalystSource:
     - `financialData` 的共識平均／人數只進 `cross_check`（L9）。
     - 同一次 chart 呼叫已拿到的週線收盤（改標成收盤可得日）一併帶出，供引擎
       排除疑似分割的誤判；不多打任何上游。
+    - 同一個 chart 回應 meta 的最新成交價與時間帶成 `quote`（V2-05／#407：
+      目前股價在股票掃描階段取得，不依賴選擇權搜尋）。
     - 失敗收斂成 `ProviderResult(error=...)`，不丟例外。
     """
 
@@ -178,7 +188,9 @@ class YahooAnalystSource:
             history_from=min((r.published_on for r in records), default=None),
             cross_check=cross,
             weekly_closes=closes_by_close_date(data.weekly_closes,
-                                               available_on=fetched_on))
+                                               available_on=fetched_on),
+            quote=(PriceQuote(data.quote.price, data.quote.at)
+                   if data.quote is not None else None))
 
 
 ANALYST_SOURCE_ENV = "OC_ANALYST_SOURCE"

@@ -4780,6 +4780,22 @@ body {
   font-size: 12px;
 }
 
+/* V2-05（#407）：標的格下的目前股價／報價日期／目標漲跌幅，一項一行。 */
+.opp-table td .opp-quote {
+  display: block;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.opp-table td .opp-quote > span {
+  display: block;
+  /* 缺資料原因較長：在格內換行，不撐寬整張表（表格儲存格預設不換行）。 */
+  white-space: normal;
+  min-width: 10em;
+}
+
 .opp-table .opp-return {
   font-weight: 700;
 }

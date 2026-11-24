@@ -1319,7 +1319,24 @@ export type ConsensusStatus =
   | "ok" | "insufficient_analysts" | "insufficient_history" | "stale"
   | "no_data" | "source_error" | "split_unresolved";
 
-export interface ConsensusItem {
+/** V2-05（#407）：目標漲跌幅不能算時的原因代碼（`api_app/price_quote.py`）。 */
+export type UpsideReason = "no_price" | "no_mean" | "split_mismatch" | "price_stale";
+
+/** V2-05（#407）：股票掃描階段（分析師共識更新）存下的目前股價與目標漲跌幅
+ *  ——**不是**選擇權搜尋的 spot。後端只新增欄位，全部可省略：舊後端沒有
+ *  這些欄位時，畫面當成「尚未取得股價」。`target_upside_pct` 是
+ *  (平均目標價 ÷ 目前股價 − 1) × 100，已四捨五入到小數一位；不能算時為
+ *  `null`，`target_upside_reason` 寫原因。 */
+export interface QuoteFields {
+  price?: number | null;
+  price_date?: string | null;
+  price_at?: string | null;
+  price_kind?: "close" | "intraday" | null;
+  target_upside_pct?: number | null;
+  target_upside_reason?: UpsideReason | null;
+}
+
+export interface ConsensusItem extends QuoteFields {
   symbol: string;
   status: ConsensusStatus;
   as_of: string | null;
@@ -1522,7 +1539,7 @@ export interface OpportunityRow {
   max_loss_per_contract: number;
   target_return: number;
   breakeven: number | null;
-  consensus: {
+  consensus: QuoteFields & {
     mean: number;
     n_analysts: number;
     dispersion: number;

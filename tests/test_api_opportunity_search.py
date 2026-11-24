@@ -159,7 +159,10 @@ def test_rows_carry_the_consensus_summary_and_no_banned_field_names():
     aaa = next(i for i in consensus["items"] if i["symbol"] == "AAA")
     for row in body["rows"]:
         assert row["consensus"] == {k: aaa[k] for k in (
-            "mean", "n_analysts", "dispersion", "percentile", "as_of", "coverage")}
+            "mean", "n_analysts", "dispersion", "percentile", "as_of", "coverage",
+            # V2-05（#407）只新增欄位
+            "price", "price_date", "price_at", "price_kind",
+            "target_upside_pct", "target_upside_reason")}
         assert row["consensus"]["coverage"] == "partial"
 
     def keys(x):
@@ -172,6 +175,20 @@ def test_rows_carry_the_consensus_summary_and_no_banned_field_names():
                 yield from keys(v)
     banned = ("expected", "probability", "win")
     assert not [k for k in keys(body) if any(b in k.lower() for b in banned)]
+
+
+def test_row_price_is_the_consensus_update_quote_not_the_option_chain_spot():
+    """V2-05（#407）：結果列的目前股價是共識更新時存下的報價（fixture AAA：
+    100.00，2026-09-25 收盤），不是這次選擇權搜尋帶回的 spot（這裡是 135）。"""
+    chain = _chain(spot=135.0)
+    client, _ = _app(fetch=lambda s: chain)
+    _ready(client)
+    body = _search(client, {"symbols": ["AAA"]})
+    assert body["rows"]
+    for row in body["rows"]:
+        c = row["consensus"]
+        assert (c["price"], c["price_date"], c["price_kind"]) == (100.0, "2026-09-25", "close")
+        assert c["target_upside_pct"] == 20.0 and c["target_upside_reason"] is None
 
 
 def test_search_writes_no_scenario_or_result():

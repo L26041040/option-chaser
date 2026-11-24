@@ -44,7 +44,13 @@
     },
     "target_month": "2027-11",
     "rules_version": "provisional-split-price",
-    "refresh_error": null
+    "refresh_error": null,
+    "price": 125.53,
+    "price_date": "2026-11-20",
+    "price_at": "2026-11-20T21:00:01+00:00",
+    "price_kind": "close",
+    "target_upside_pct": 101.4,
+    "target_upside_reason": null
   },
   "effective": [
     {

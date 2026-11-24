@@ -183,6 +183,18 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
     expect(within(selected).queryByRole("listitem", { name: "BBB" })).not.toBeInTheDocument();
   });
 
+  it("符合條件的股票顯示目前股價（帶報價日期）與目標漲跌幅；不能算時寫原因（V2-05／#407）", async () => {
+    await renderReady();
+    const selected = await screen.findByRole("region", { name: "符合條件的股票" });
+    const aaa = within(selected).getByRole("listitem", { name: "AAA" });
+    // fixture：平均目標價 120、股價 100（2026-09-25 收盤）→ +20.0%
+    expect(aaa).toHaveTextContent("目前股價 $100.00（2026-09-25 收盤）");
+    expect(aaa).toHaveTextContent("目標漲跌幅 +20.0%");
+    const eee = within(selected).getByRole("listitem", { name: "EEE" });
+    expect(eee).toHaveTextContent("目前股價 $440.00（2025-05-30 收盤）");
+    expect(eee).toHaveTextContent("目標漲跌幅 — · 分割基準不一致，暫不計算");
+  });
+
   it("不符合條件與資料不足分開列，不符合條件的附上哪一道門檻沒過", async () => {
     await renderReady();
     const weak = await screen.findByRole("region", { name: "不符合條件" });
@@ -295,6 +307,21 @@ describe("OpportunityPage：結果列的共識詳細資料（LIVE-T5／#401）",
 
     await user.click(toggle);
     expect(within(results).queryByRole("region", { name: "AAA 共識明細" })).not.toBeInTheDocument();
+  });
+
+  it("每一列都看得到共識更新時存下的目前股價、報價日期與目標漲跌幅（V2-05／#407）", async () => {
+    const user = userEvent.setup();
+    await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
+    await user.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    const rows = await within(results).findAllByRole("row", { name: /^AAA / });
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const cell = within(row).getByText("AAA").closest("td")!;
+      expect(cell).toHaveTextContent("目前股價 $100.00");
+      expect(cell).toHaveTextContent("2026-09-25 收盤");
+      expect(cell).toHaveTextContent("目標漲跌幅 +20.0%");
+    }
   });
 });
 
