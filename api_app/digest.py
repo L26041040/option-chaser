@@ -100,6 +100,11 @@ def build_digest_text(snapshot: DigestSnapshot) -> str:
         lines.append(f"  失敗：{c['failed']}")
         lines.append(f"  資料不足或無資料：{c['insufficient']}")
         lines.append(f"  入選（預設門檻 20%／10%）：{c['selected']}")
+        if "not_reached" in c:
+            lines.append(f"  尚未輪到：{c['not_reached']}（每日更新範圍 {c['universe']} 檔）")
+        cron = c.get("cron")
+        if cron is not None:
+            lines.append(f"  排程：{cron_line(cron)}")
     lines.append("")
 
     lines.append("系統健康 ／ vendor 用量 ／ 異常訊號（system health ＋ "
@@ -109,6 +114,16 @@ def build_digest_text(snapshot: DigestSnapshot) -> str:
         lines.append(f"  {mark} {a.message}")
 
     return "\n".join(lines)
+
+
+def cron_line(cron: dict) -> str:
+    """排程實際執行情形的一句話（V2-02／#403）——只依授權成功的執行紀錄
+    （`consensus_cache.cron_view()`），不從 vercel.json 有設定去推論。"""
+    if cron["runs_today"] > 0:
+        return f"今天已執行 {cron['runs_today']} 次（處理 {cron['symbols_today']} 檔）"
+    if cron["last_run_day"] is None:
+        return (f"尚未執行（近 {cron['lookback_days']} 天沒有任何一次授權成功的排程呼叫）")
+    return f"今天尚未執行；最近一次在 {cron['last_run_day']}"
 
 
 def send_digest_email(

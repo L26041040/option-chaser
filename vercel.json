@@ -9,7 +9,131 @@
   "crons": [
     {
       "path": "/api/cron/consensus-refresh",
+      "schedule": "0 5 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 5 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 6 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 6 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 7 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 7 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 8 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 8 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 9 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 9 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
       "schedule": "0 10 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 10 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 11 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 11 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 12 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 16 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 16 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 17 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 17 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 18 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 18 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 19 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 19 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 20 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 20 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 22 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 22 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "0 23 * * 1-5"
+    },
+    {
+      "path": "/api/cron/consensus-refresh",
+      "schedule": "30 23 * * 1-5"
     },
     {
       "path": "/api/cron/warm-rate-cache",
@@ -18,10 +142,6 @@
     {
       "path": "/api/cron/cleanup-abandoned-owners",
       "schedule": "0 12 * * *"
-    },
-    {
-      "path": "/api/cron/consensus-refresh",
-      "schedule": "0 12 * * 1-5"
     },
     {
       "path": "/api/cron/daily-digest",

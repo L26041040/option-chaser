@@ -5,12 +5,18 @@
     "max_retries": 3,
     "retry_cooldown_seconds": 900,
     "rate_limit_cooldown_seconds": 1800,
-    "daily_upstream_cap": 400,
+    "daily_upstream_cap": 900,
     "lease_seconds": 120,
     "call_spacing_seconds": 1.0,
     "batch_size": 25
   },
-  "daily_cap": 400,
+  "daily_cap": 900,
+  "cron": {
+    "runs_today": 0,
+    "symbols_today": 0,
+    "last_run_day": null,
+    "lookback_days": 30
+  },
   "out_of_scope": 0,
   "out_of_scope_symbols": [],
   "source": {

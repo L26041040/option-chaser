@@ -300,6 +300,9 @@ test("SU：更新分析師資料依 remaining 自動續跑到完；冷卻中的�
   await expect(facts.getByRole("listitem", { name: "今日更新" }))
     .toContainText("已完成 24／57 檔、失敗 1 檔");
   await expect(facts.getByRole("listitem", { name: "資料日期" })).toContainText("2026-09-28");
+  // 沒有任何授權成功的排程執行：照實說排程尚未執行（V2-02／#403）。
+  await expect(facts.getByRole("listitem", { name: "排程" }))
+    .toContainText("排程尚未執行（近 30 天沒有紀錄）");
   await noHorizontalScroll(page);
 
   await panel.getByRole("button", { name: "更新分析師資料" }).click();
@@ -479,13 +482,17 @@ test("失敗（#401）：冷卻中停用並倒數，時間到按下真的重試�
   await page.route("**/api/opportunity/consensus", (route) => route.fulfill({ json: REAL }));
   let capped = false;
   await page.route("**/api/opportunity/consensus/status", (route) =>
-    route.fulfill({ json: capped ? { ...refreshStatus, upstream_calls_today: 400 } : refreshStatus }));
+    // 排程有授權成功的執行紀錄時才說「明天自動更新」（V2-02／#403）。
+    route.fulfill({ json: capped ? { ...refreshStatus, upstream_calls_today: 400, daily_cap: 400,
+                                     cron: { runs_today: 2, symbols_today: 56,
+                                             last_run_day: "2026-09-28", lookback_days: 30 } }
+                                 : refreshStatus }));
   const updates: unknown[] = [];
   await page.route("**/api/opportunity/consensus/update", (route) => {
     updates.push(route.request().postDataJSON());
     capped = true;   // 這次重試用掉了今天最後一次上游呼叫
     return route.fulfill({ json: { ...refreshUpdate, processed_symbols: ["GGG"], remaining: [],
-                                   upstream_calls_today: 400 } });
+                                   upstream_calls_today: 400, daily_cap: 400 } });
   });
 
   await page.goto("/#/opportunity");

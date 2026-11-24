@@ -24,6 +24,8 @@ import type { Role } from "./superuser";
 
 const CONSENSUS = consensusSample as unknown as OpportunityConsensusResponse;
 const STATUS = statusSample as unknown as ConsensusRefreshStatusResponse;
+/** 排程有授權成功的執行紀錄（V2-02／#403）——只有這時才說「明天自動更新」。 */
+const CRON_RAN = { runs_today: 2, symbols_today: 56, last_run_day: "2026-09-28", lookback_days: 30 };
 const UPDATE = updateSample as unknown as ConsensusUpdateResponse;
 
 type Reply = { status: number; body: unknown };
@@ -116,7 +118,10 @@ describe("分析師資料：權限", () => {
     expect(within(facts).getByRole("listitem", { name: "今日更新" }))
       .toHaveTextContent("已完成 24／57 檔、失敗 1 檔");
     expect(within(facts).getByRole("listitem", { name: "今日上游呼叫" }))
-      .toHaveTextContent("25／400 次");
+      .toHaveTextContent("25／900 次");
+    // 契約樣本沒有任何授權成功的排程執行：照實說排程尚未執行（V2-02／#403）。
+    expect(within(facts).getByRole("listitem", { name: "排程" }))
+      .toHaveTextContent("排程尚未執行（近 30 天沒有紀錄）");
     expect(within(panel).getByRole("button", { name: "更新分析師資料" })).toBeEnabled();
   });
 });
@@ -232,13 +237,24 @@ describe("分析師資料：重試", () => {
   });
 
   it("重試用完：停用並說明明天自動更新", async () => {
-    const { panel } = await renderPanel({ status: [{ status: 200, body: withSymbol("GGG", {
+    const { panel } = await renderPanel({ status: [{ status: 200, body: { ...withSymbol("GGG", {
       state: "exhausted", retries_today: 3,
-      next_retry_at: "2026-09-29T04:00:00+00:00" }) }] });
+      next_retry_at: "2026-09-29T04:00:00+00:00" }), cron: CRON_RAN } }] });
     const item = within(panel).getByRole("listitem", { name: "GGG" });
     expect(within(item).getByRole("button", { name: "重試 GGG" })).toBeDisabled();
     expect(item).toHaveTextContent("今日已重試 3 次");
     expect(item).toHaveTextContent("今天的重試次數已用完，明天自動更新");   // 美東 9/28 是週一
+    expect(fact(panel, "排程")).toHaveTextContent("今天已執行 2 次（處理 56 檔）");
+  });
+
+  it("排程尚未執行（V2-02／#403）：重試用完時不說會自動更新", async () => {
+    const { panel } = await renderPanel({ status: [{ status: 200, body: withSymbol("GGG", {
+      state: "exhausted", retries_today: 3,
+      next_retry_at: "2026-09-29T04:00:00+00:00" }) }] });
+    const item = within(panel).getByRole("listitem", { name: "GGG" });
+    expect(item).toHaveTextContent(
+      "今天的重試次數已用完，排程尚未執行，不會自動更新，明天請手動「繼續更新」");
+    expect(item).not.toHaveTextContent("明天自動更新");
   });
 });
 
@@ -369,7 +385,7 @@ describe("資料狀態（LIVE-T5／#401）", () => {
     const capped = withSymbol("GGG", { state: "retry_ready", next_retry_at: null,
                                        retryable_now: true });
     const { spy, panel } = await renderPanel({ consensus: [REAL], status: [{ status: 200,
-      body: { ...capped, upstream_calls_today: 400 } }] });
+      body: { ...capped, upstream_calls_today: 400, daily_cap: 400, cron: CRON_RAN } }] });
     expect(phaseTag(panel)).toHaveTextContent("已達今日上限");
     expect(within(panel).getByRole("status")).toHaveTextContent(
       "今日上游呼叫已達每日上限（400／400 次），今天不能再更新或重試，明天自動更新。");
@@ -410,7 +426,8 @@ describe("資料狀態（LIVE-T5／#401）", () => {
 
   it("已達今日上限且當天是美東週五：說下週一自動更新", async () => {
     const { panel } = await renderPanel({ consensus: [REAL], status: [{ status: 200,
-      body: { ...STATUS, today: "2026-09-25", upstream_calls_today: 400 } }] });
+      body: { ...STATUS, today: "2026-09-25", upstream_calls_today: 400, daily_cap: 400,
+              cron: CRON_RAN } }] });
     expect(within(panel).getByRole("status")).toHaveTextContent("下週一自動更新");
   });
 

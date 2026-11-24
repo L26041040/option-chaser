@@ -999,10 +999,10 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
     更新、共識清單（`rules` 區塊照實回報）與搜尋；不認得的月份規則在
     建 app 時就拒絕（`ValueError`），不留到第一次請求才炸。
 
-    `consensus_refresh_symbol_cap`：每日共識更新母體的總上限（樣本優先，
+    `consensus_refresh_symbol_cap`：每日共識更新母體的總上限（超出時的截斷順序
     見 `consensus_cache.refresh_universe()`）。`None` 讀環境變數
     `CONSENSUS_REFRESH_SYMBOL_CAP`，再落回
-    `consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP`（200，數值待 #386）。
+    `consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP`（600：S&P 500＋自訂清單，V2-02／#403）。
 
     `consensus_refresh_policy`（LIVE-T3／#398）：分析師資料更新的重試次數、
     冷卻、429 冷卻、每日上游呼叫上限、處理中標記逾時、呼叫間隔與 SU 端點
@@ -2096,8 +2096,14 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
         if not _cron_authorized(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         if analyst_source is None:
-            return {"skipped": "source_not_configured"}
-        return _refresh_consensus(_consensus_update_universe(), batch_limit=None)
+            result = {"skipped": "source_not_configured"}
+        else:
+            result = _refresh_consensus(_consensus_update_universe(), batch_limit=None)
+        # V2-02（#403）：授權成功的每一次執行都留紀錄——狀態與每日摘要據此
+        # 照實回答「排程有沒有在跑」（被 401 的呼叫走不到這裡，不留紀錄）。
+        _record_metric(consensus_cache.CRON_RUN_METRIC, ny_today(), count=1,
+                       amount=float(result.get("processed", 0)))
+        return result
 
     def _consensus_update_universe() -> list[str]:
         return consensus_cache.refresh_universe(
@@ -2336,7 +2342,9 @@ def create_app(*, fetch: FetchChain = service.fetch_chain,
             identity_heals_today=identity_heals,
             identity_unknown_writes_refused_today=identity_unknown_refused,
             identity_cookie_renewals_today=identity_renewals,
-            consensus=consensus_cache.digest_counts(_db(), analyst_source, today))
+            consensus=consensus_cache.digest_counts(
+                _db(), analyst_source, today,
+                _consensus_update_universe() if analyst_source is not None else ()))
 
     # ---------- S0 最小可觀測性（SCALE-08／#258） ----------
 

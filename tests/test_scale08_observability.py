@@ -102,8 +102,10 @@ def test_metric_catalogue_is_exactly_seven():
         # IRI-05：身分健康五類
         "identity_heal_cookie_from_local", "identity_heal_local_from_cookie",
         "identity_unknown_token", "identity_unknown_write_refused",
-        "identity_renew_cookie"}
-    assert len(METRIC_CATALOGUE) == 19
+        "identity_renew_cookie",
+        # V2-02（#403）：分析師資料排程實際執行了幾次
+        "consensus_cron_run_count"}
+    assert len(METRIC_CATALOGUE) == 20
 
 
 def test_table_size_is_the_only_non_persisted_metric():

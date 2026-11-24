@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from api_app import main as main_module
 from api_app.analyst_source import FixtureAnalystSource, ProviderResult
-from api_app import consensus_cache, sp500_constituents
+from api_app import consensus_cache, search_universe, sp500_constituents
 from api_app.search_universe import REFRESH_PRIORITY
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
@@ -254,7 +254,7 @@ def test_everything_in_scope_reports_no_out_of_scope_symbols():
 
 def test_default_universe_is_the_sp500_with_its_version_date():
     """V2-01（#404）：預設掃描範圍是 S&P 500 成分股（不是暫定清單），帶版本日期；
-    超出每日更新上限（200）的成分股照實列為 out_of_scope（擴量是 #403 的事）。"""
+    V2-02（#403）起整份成分股都在每日更新範圍內，沒有 out_of_scope。"""
     storage = MemoryStorage()
     client = _app(storage, source=FixtureAnalystSource(FIXTURE))
     body = _consensus(client)
@@ -264,7 +264,7 @@ def test_default_universe_is_the_sp500_with_its_version_date():
     assert body["universe"]["provisional"] is False
     assert body["universe"]["version_date"] == sp500_constituents.VERSION
     assert body["universe"]["symbols"] == len(body["items"]) == total
-    assert body["universe"]["out_of_scope"] == total - 200
+    assert body["universe"]["out_of_scope"] == 0
     symbols = [i["symbol"] for i in body["items"]]
     assert {"GOOGL", "GOOG", "BRK.B", "BF.B"} <= set(symbols)
 
@@ -379,27 +379,40 @@ def test_cron_universe_is_capped_with_the_sample_first_then_sorted_custom():
 
 
 def test_update_universe_order_is_priority_then_custom_then_the_rest_of_sp500():
-    """#404：每日更新上限仍是 200（約 500 檔的排程是 #403 的事）。誰先佔名額：
-    優先 50 檔 → SU/SA 自訂清單（canonical、依代號排序）→ 其餘成分股（清單順序）。"""
+    """只在超出上限時才有意義的截斷順序（#404 起）：優先 50 檔 → SU/SA 自訂清單
+    （canonical、依代號排序）→ 其餘成分股（清單順序）。V2-02／#403 起每次續跑
+    挑誰先抓由公平輪替決定（`rotation_key()`），這個順序只決定誰被截在上限外。"""
     storage = MemoryStorage()
     _seed_custom_list(storage, "su-owner", "superuser", ["ZZZ", "BRK-B", "AAPL"])
     rest = [s for s, _ in sp500_constituents.CONSTITUENTS
             if s not in REFRESH_PRIORITY and s != "BRK.B"]
     got = consensus_cache.refresh_universe(storage, cap=55)
     assert got == [*REFRESH_PRIORITY, "BRK.B", "ZZZ", *rest[:3]]
+
+
+def test_default_update_universe_covers_the_whole_sp500_plus_custom_lists():
+    """V2-02／#403：預設上限 600＝S&P 500（503 檔）＋約兩份滿額（各 50 檔）的
+    成分股以外自訂清單，整份成分股都在每日更新範圍內，沒有 out_of_scope。"""
+    storage = MemoryStorage()
+    _seed_custom_list(storage, "su-owner", "superuser",
+                      [f"Q{chr(65 + i // 26)}{chr(65 + i % 26)}" for i in range(50)])
+    _seed_custom_list(storage, "sa-owner", "superadmin",
+                      [f"R{chr(65 + i // 26)}{chr(65 + i % 26)}" for i in range(47)])
     full = consensus_cache.refresh_universe(storage)
-    assert len(full) == 200 == consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP
+    assert consensus_cache.DEFAULT_REFRESH_SYMBOL_CAP == 600
+    assert len(full) == 600
+    assert set(search_universe.resolve_universe(None).symbols) <= set(full)
 
 
-def test_cron_universe_cap_defaults_to_200():
+def test_cron_universe_beyond_the_cap_is_out_of_scope():
     storage = MemoryStorage()
     source = CountingSource(FixtureAnalystSource(FIXTURE))
     client = _app(storage, source=source)
-    for n in range(5):
+    for n in range(3):
         _seed_custom_list(storage, f"su-{n}", "superuser",
                           [f"X{n}{chr(65 + i // 26)}{chr(65 + i % 26)}" for i in range(50)])
     _run_cron(client)
-    assert len(source.calls) == 200
+    assert len(source.calls) == 600
     assert set(_sample_symbols()) <= set(source.calls)
 
 
@@ -480,6 +493,49 @@ def test_cron_cursor_prefers_symbols_least_recently_attempted(monkeypatch):
     assert next_day["remaining"][-1] == source.calls[0]  # 昨天跑過的排最後
 
 
+# ---------- 排程實際有沒有跑（V2-02／#403） ----------
+
+def _status(client):
+    r = client.get("/api/opportunity/consensus/status")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_status_says_the_schedule_has_not_run_when_no_authorized_cron_call_happened():
+    """正式站沒有 CRON_SECRET 時每次 cron 都是 401——狀態照實說「排程尚未執行」，
+    不從「有設定 cron」推論它有在跑。被拒絕的呼叫不留任何紀錄。"""
+    client, _ = _fixture_client()
+    assert client.get("/api/cron/consensus-refresh").status_code == 401
+    assert client.get("/api/cron/consensus-refresh",
+                      headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert _status(client)["cron"] == {"runs_today": 0, "symbols_today": 0,
+                                       "last_run_day": None, "lookback_days": 30}
+
+
+def test_each_authorized_cron_run_is_recorded_with_the_symbols_it_processed():
+    client, _ = _fixture_client(refresh_run_budget=timedelta(0))
+    _run_cron(client)
+    _run_cron(client)
+    cron = _status(client)["cron"]
+    assert cron["runs_today"] == 2
+    assert cron["symbols_today"] == 2          # 預算 0：每次一檔
+    assert cron["last_run_day"] == "2026-09-28"
+
+
+def test_status_reports_the_last_day_the_schedule_ran(monkeypatch):
+    client, _ = _fixture_client()
+    _run_cron(client)
+    monkeypatch.setattr(main_module, "ny_today", lambda: date(2026, 9, 30))
+    cron = _status(client)["cron"]
+    assert cron["runs_today"] == 0 and cron["last_run_day"] == "2026-09-28"
+
+
+def test_cron_runs_are_recorded_even_before_a_source_is_configured():
+    client = _app(MemoryStorage())
+    assert client.get("/api/cron/consensus-refresh", headers=CRON).status_code == 200
+    assert _status(client)["cron"]["runs_today"] == 1
+
+
 # ---------- 權限 ----------
 
 def test_normal_user_gets_403():
@@ -519,6 +575,19 @@ def test_daily_digest_reports_consensus_refresh_counts(monkeypatch):
     assert "失敗：1" in text
     assert "資料不足或無資料：52" in text
     assert "入選（預設門檻 20%／10%）：2" in text
+    assert "尚未輪到：0（每日更新範圍 57 檔）" in text
+    assert "排程：今天已執行 1 次（處理 57 檔）" in text
+
+
+def test_daily_digest_reports_symbols_not_reached_and_a_schedule_that_never_ran(monkeypatch):
+    """SU 手動更新了一部分、cron 從沒成功授權過：摘要照實寫出尚未輪到的檔數，
+    並明說排程尚未執行（不假裝排程正常）。"""
+    client, _ = _fixture_client()
+    r = client.post("/api/opportunity/consensus/update", json={})
+    assert r.status_code == 200, r.text
+    text = _digest_text(client, monkeypatch)
+    assert "尚未輪到：47（每日更新範圍 57 檔）" in text
+    assert "排程：尚未執行（近 30 天沒有任何一次授權成功的排程呼叫）" in text
 
 
 def test_daily_digest_says_when_the_source_is_not_configured(monkeypatch):
@@ -528,26 +597,63 @@ def test_daily_digest_says_when_the_source_is_not_configured(monkeypatch):
     assert "尚未設定分析師資料來源" in text
 
 
-def test_consensus_refresh_is_scheduled_daily_twice_before_the_digest():
-    """Hobby 的 cron 每個條目一天最多一次、觸發時間 ±59 分（LIVE-T3／#398 查證）。
-    一次呼叫受 45 秒預算約束，真實 Yahoo 約 1.5 秒／檔（含 1 秒間隔）≈ 30 檔，
-    50 檔的大型股樣本要兩次——所以同一路徑排兩個每日條目，都在摘要之前、
-    相隔至少兩小時（±59 分也不會重疊；就算重疊，處理中標記也不會重複抓）。"""
+def _crons():
     import json
     from pathlib import Path
-    entries = json.loads(Path("vercel.json").read_text())["crons"]
-    hours = []
+    return json.loads(Path("vercel.json").read_text())["crons"]
+
+
+# 實測（V2-02／#403，docs/spec/options-scanner/daily-rotation.md）：一次 cron 受
+# 45 秒預算約束，真實 Yahoo 503 檔分 19 次跑完，每次平均 27.2 檔、最少 23 檔
+# （每檔約 1.7 秒，含 1 秒間隔）；這裡用觀測到的最少值。
+SYMBOLS_PER_RUN = 23
+
+
+def test_consensus_refresh_slots_cover_the_whole_update_universe_each_trading_day():
+    """Hobby：每個 cron 條目一天最多一次、觸發時間在該小時內浮動，上限 100 個。
+    同一路徑排多個錯開的每日條目，即使每次都只跑出觀測到的最少檔數，每天的
+    容量也要涵蓋整個每日更新範圍（上限 600）再多 20% 給失敗重試。"""
+    from api_app.consensus_cache import DEFAULT_REFRESH_SYMBOL_CAP
+    entries = _crons()
+    slots = []
     for c in entries:
         if c["path"] != "/api/cron/consensus-refresh":
             continue
         minute, hour, dom, month, dow = c["schedule"].split()
         assert minute.isdigit() and hour.isdigit() and dom == "*" and month == "*"
-        hours.append(int(hour))
-    digest = next(c for c in entries if c["path"] == "/api/cron/daily-digest")
-    digest_hour = int(digest["schedule"].split()[1])
-    assert len(hours) >= 2
-    assert all(h < digest_hour for h in hours)   # 摘要讀得到當天的更新統計
-    assert min(b - a for a, b in zip(sorted(hours), sorted(hours)[1:])) >= 2
+        assert dow == "1-5"                     # 只排交易日（週一到週五）
+        slots.append((int(hour), int(minute)))
+    assert len(slots) == len(set(slots))        # 同一路徑、不同 schedule
+    assert len(slots) * SYMBOLS_PER_RUN >= 1.2 * DEFAULT_REFRESH_SYMBOL_CAP
+    assert len(entries) <= 100
+
+
+def test_consensus_refresh_slots_stay_on_the_same_new_york_trading_day_and_off_peak():
+    """UTC 05–23 點在美東永遠是同一個週一到週五（EST／EDT 都是）：每個時段都算
+    同一個交易日、共用同一份每日上限。避開 13:00–16:00 UTC 的尖峰；每小時最多
+    兩個（小時內浮動也不會擠成一團，就算重疊，處理中標記也不會重複抓）。"""
+    hours = [int(c["schedule"].split()[1]) for c in _crons()
+             if c["path"] == "/api/cron/consensus-refresh"]
+    assert all(5 <= h <= 23 for h in hours)
+    assert not any(13 <= h < 16 for h in hours)
+    assert max(hours.count(h) for h in set(hours)) <= 2
+
+
+def test_most_of_the_daily_pass_runs_before_the_digest():
+    """每日摘要（UTC 13 點）寫的是當天到那時為止的統計：摘要之前的時段，即使
+    每次都只跑出觀測到的最少檔數，也涵蓋 S&P 500 的七成以上。"""
+    entries = _crons()
+    digest_hour = int(next(c for c in entries
+                           if c["path"] == "/api/cron/daily-digest")["schedule"].split()[1])
+    before = [c for c in entries if c["path"] == "/api/cron/consensus-refresh"
+              and int(c["schedule"].split()[1]) < digest_hour]
+    assert len(before) * SYMBOLS_PER_RUN >= 0.7 * len(sp500_constituents.CONSTITUENTS)
+
+
+def test_the_other_crons_are_kept():
+    paths = {c["path"] for c in _crons()}
+    assert {"/api/cron/warm-rate-cache", "/api/cron/cleanup-abandoned-owners",
+            "/api/cron/daily-digest"} <= paths
 
 
 # ---------- 契約樣本（前端 mock 與後端共用） ----------

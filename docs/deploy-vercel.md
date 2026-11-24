@@ -75,6 +75,36 @@ Marketplace 的 Neon 免費層，全程在 Vercel 後台點：
 2. 在 Vercel 後台 **Redeploy**
 3. `GET /api/scenarios` ——那筆還在＝驗證通過
 
+## 啟用排程：設定 `CRON_SECRET`（V2-02／#403，Owner 操作一次，**必要**）
+
+**現況**：Production 沒有 `CRON_SECRET`，所以 `vercel.json` 裡所有 cron（分析師資料
+每日續跑 32 個時段、利率預熱、匿名清理、每日摘要）每次觸發都被 `_cron_authorized()`
+回 **401**，什麼都沒做。程式刻意 fail-closed：沒有 secret 就一律拒絕，也**不**接受
+`x-vercel-cron`、User-Agent 之類可以偽造的 header。分析師資料的「資料狀態 → 排程」與每日
+摘要會照實顯示「排程尚未執行」，直到下面的步驟做完、cron 真的授權成功跑過一次。
+
+步驟（不要把值貼到任何對話、issue 或 commit 裡）：
+
+1. 在自己的電腦產生一個隨機值（至少 32 個字元），例如：
+   `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
+   或 `openssl rand -base64 48`
+2. Vercel → 專案 → **Settings** → **Environment Variables** → **Add**：
+   - Key：`CRON_SECRET`
+   - Value：第 1 步的值
+   - Environments：勾 **Production**（cron 只在 Production 觸發；不需要 Preview）
+   - 跟 `SUPERUSER_PASSWORD`／`SUPERADMIN_PASSWORD`／`ABUSE_HASH_KEY` 都用不同的值
+3. **Redeploy** Production（環境變數在部署時綁定，不重新部署不會生效）。
+4. 驗證（任選，皆不需要知道 secret）：
+   - 等下一個整點時段（例如 UTC 05:00–05:59 之間會觸發一次），以 SU 登入 →
+     機會搜尋 →「分析師資料」→「資料狀態 → 排程」應變成「今天已執行 N 次（處理 M 檔）」；
+   - 或 Vercel → 專案 → **Logs**，篩 `/api/cron/consensus-refresh`，狀態碼應是 **200**
+     （設好之前都是 401）。
+5. 輪替：照第 1–3 步換一個新值即可，舊值立即失效。
+
+Vercel 排程觸發 Cron 時會自動帶上 `Authorization: Bearer <CRON_SECRET>`，不需要另外設定
+header。排程時段、每次處理量與額度見
+[`docs/spec/options-scanner/daily-rotation.md`](spec/options-scanner/daily-rotation.md)。
+
 ## Treasury Cron 預熱（SCALE-07／#257，需求方操作一次，選用）
 
 `vercel.json` 已設一個每個交易日 UTC 11:00（約美東早上 6-7 點，視
@@ -84,11 +114,7 @@ Treasury 冷抓取；**這只是預熱，不是必要條件**——不設定
 `CRON_SECRET`、或整個停用 Cron，既有的同步 refresh-on-miss（第一次
 真正分析時自己觸發抓取）完全不受影響。
 
-要讓這個端點真的驗證授權（**強烈建議**，否則任何人都能觸發它）：
-
-1. 專案 → **Settings** → **Environment Variables**
-2. 新增 `CRON_SECRET`，值設一個隨機字串，三個 Environment 都勾
-3. 重新部署一次（環境變數是建置時綁定的）
+這個端點跟其他 cron 共用同一個 `CRON_SECRET`，設定步驟見上一節「啟用排程」。
 
 Vercel 排程觸發 Cron 時會自動帶上
 `Authorization: Bearer <CRON_SECRET>`——不需要另外設定 header。

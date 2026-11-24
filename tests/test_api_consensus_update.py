@@ -427,7 +427,7 @@ def test_policy_defaults_are_reported():
     client, _ = _client(ScriptedSource(), policy=RefreshPolicy())
     assert _status(client)["policy"] == {
         "max_retries": 3, "retry_cooldown_seconds": 900,
-        "rate_limit_cooldown_seconds": 1800, "daily_upstream_cap": 400,
+        "rate_limit_cooldown_seconds": 1800, "daily_upstream_cap": 900,
         "lease_seconds": 120, "call_spacing_seconds": 1.0, "batch_size": 10}
 
 
