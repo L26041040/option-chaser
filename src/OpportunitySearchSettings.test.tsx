@@ -13,13 +13,15 @@ import OpportunitySearchSettings from "./OpportunitySearchSettings";
 import type { OpportunitySearchSettings as Opp, SettingsView } from "./api";
 
 const DEFAULTS: Opp = {
-  universe_id: "sample-large-cap",
+  universe_id: "sp500",
   custom_symbols: [],
   percentile_max: 20,
   dispersion_max: 10,
   strategies: ["single-leg", "vertical-spread", "butterfly"],
   sort: "return",
 };
+
+const SP500_RADIO = "S&P 500 成分股（503 檔，版本 2026-11-08）";
 
 function view(opp: Partial<Opp> = {}): SettingsView {
   return {
@@ -32,9 +34,10 @@ function view(opp: Partial<Opp> = {}): SettingsView {
     opportunity_search: { ...DEFAULTS, ...opp },
     opportunity_search_options: {
       universes: [
-        { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
-          provisional: true, symbol_count: 50 },
-        { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+        { id: "sp500", label: "S&P 500 成分股", provisional: false, symbol_count: 503,
+          version_date: "2026-11-08" },
+        { id: "custom", label: "自訂清單", provisional: false, symbol_count: null,
+          version_date: null },
       ],
       strategies: ["single-leg", "vertical-spread", "butterfly"],
       sorts: [{ id: "return", label: "排序甲（後端文字）" },
@@ -84,7 +87,7 @@ describe("渲染", () => {
     const b = block();
     expect(b.getByLabelText("分歧度歷史百分位門檻（%）")).toHaveValue(35);
     expect(b.getByLabelText("分歧度門檻（%）")).toHaveValue(10);
-    expect(b.getByRole("radio", { name: "大型股樣本（暫定，清單來源待 #382）" })).toBeChecked();
+    expect(b.getByRole("radio", { name: SP500_RADIO })).toBeChecked();
     expect(b.getByRole("checkbox", { name: "Call / Put" })).toBeChecked();
     expect(b.getByRole("checkbox", { name: "Vertical Spread" })).toBeChecked();
     expect(b.getByRole("checkbox", { name: "Butterfly" })).toBeChecked();
@@ -97,12 +100,6 @@ describe("渲染", () => {
     const select = block().getByLabelText("排序方式");
     expect(within(select).getAllByRole("option").map((o) => o.textContent))
       .toEqual(["排序甲（後端文字）", "排序乙（後端文字）", "排序丙（後端文字）"]);
-  });
-
-  it("母體文案絕不稱為 S&P 500", () => {
-    const { container } = render(
-      <OpportunitySearchSettings view={view()} onSaved={() => {}} />);
-    expect(container.textContent).not.toMatch(/S&P|500/);
   });
 
   it("只有門檻、母體、策略、排序：沒有任何 Yahoo／API／金鑰設定（LIVE-T5／#401）", async () => {
@@ -231,5 +228,29 @@ describe("舊後端沒有機會搜尋欄位（回滾期間的過期分頁）", (
     const { container } = render(
       <OpportunitySearchSettings view={legacy as SettingsView} onSaved={() => {}} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("掃描股票範圍（V2-01／#404）", () => {
+  it("S&P 500 成分股顯示名稱、檔數與版本日期；自訂清單不顯示檔數", () => {
+    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    const b = block();
+    const group = b.getByRole("group", { name: "掃描股票範圍" });
+    expect(within(group).getByRole("radio", { name: SP500_RADIO })).toBeChecked();
+    expect(within(group).getByRole("radio", { name: "自訂清單" })).not.toBeChecked();
+  });
+
+  it("切到自訂清單、填入股權類別代號後儲存，送出 custom 與清單", async () => {
+    const spy = mockPut([{ status: 200, body: view({ universe_id: "custom",
+                                                     custom_symbols: ["BRK.B", "GOOG"] }) }]);
+    render(<OpportunitySearchSettings view={view()} onSaved={() => {}} />);
+    const b = block();
+    await userEvent.click(b.getByRole("radio", { name: "自訂清單" }));
+    await userEvent.type(b.getByLabelText("Ticker 清單"), "brk.b goog");
+    await userEvent.click(b.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(putBodies(spy)).toHaveLength(1));
+    const sent = putBodies(spy)[0].opportunity_search;
+    expect(sent.universe_id).toBe("custom");
+    expect(sent.custom_symbols).toEqual(["BRK.B", "GOOG"]);
   });
 });

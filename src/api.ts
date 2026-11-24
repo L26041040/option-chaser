@@ -1255,9 +1255,11 @@ export interface OpportunitySearchSettings {
 export interface UniverseOption {
   id: string;
   label: string;
-  /** 清單來源尚未定案（#382）——畫面照實標示，不包裝成正式清單。 */
+  /** 清單來源尚未定案——畫面照實標示，不包裝成正式清單。 */
   provisional: boolean;
   symbol_count: number | null;
+  /** 清單版本日期（S&P 500 成分股，V2-01／#404）；自訂清單為 null。舊後端沒有這欄。 */
+  version_date?: string | null;
 }
 
 /** 排序方式＋顯示文字。唯一來源是後端（`opportunity_settings`）：設定頁讀
@@ -1293,6 +1295,8 @@ export interface OpportunityConsensusResponse {
     id: string;
     label: string;
     provisional: boolean;
+    /** 清單版本日期（S&P 500 成分股，#404）；自訂清單為 null。舊後端沒有這欄。 */
+    version_date?: string | null;
     symbols: number;
     with_data: number;
     insufficient: number;

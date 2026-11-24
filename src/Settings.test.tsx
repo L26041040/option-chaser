@@ -20,7 +20,7 @@ const PROVIDER = "marketdata-app";
 
 /** OS-02（#391）：機會搜尋設定的預設值（後端沒存過時回的就是這份）。 */
 const OPP_DEFAULTS: SettingsView["opportunity_search"] = {
-  universe_id: "sample-large-cap",
+  universe_id: "sp500",
   custom_symbols: [],
   percentile_max: 20,
   dispersion_max: 10,
@@ -44,9 +44,10 @@ function view(overrides: Partial<SettingsView> = {}): SettingsView {
     opportunity_search: OPP_DEFAULTS,
     opportunity_search_options: {
       universes: [
-        { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
-          provisional: true, symbol_count: 50 },
-        { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+        { id: "sp500", label: "S&P 500 成分股", provisional: false, symbol_count: 503,
+          version_date: "2026-11-08" },
+        { id: "custom", label: "自訂清單", provisional: false, symbol_count: null,
+          version_date: null },
       ],
       strategies: ["single-leg", "vertical-spread", "butterfly"],
       sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },

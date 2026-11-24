@@ -428,3 +428,23 @@ describe("資料狀態（LIVE-T5／#401）", () => {
     expect(callsTo(spy, "/api/opportunity/consensus/status")).toEqual([]);
   });
 });
+
+// ---------- V2-01（#404）：資料狀態顯示目前使用的掃描股票範圍 ----------
+
+describe("資料狀態：掃描股票範圍（V2-01／#404）", () => {
+  it("自訂清單：顯示範圍名稱，沒有版本日期", async () => {
+    const { panel } = await renderPanel();
+    expect(fact(panel, "掃描股票範圍")).toHaveTextContent(/^掃描股票範圍自訂清單$/);
+  });
+
+  it("S&P 500 成分股：顯示名稱與清單版本日期", async () => {
+    const sp500: OpportunityConsensusResponse = {
+      ...CONSENSUS,
+      universe: { ...CONSENSUS.universe, id: "sp500", label: "S&P 500 成分股",
+                  version_date: "2026-11-08" },
+    };
+    const { panel } = await renderPanel({ consensus: [sp500] });
+    expect(fact(panel, "掃描股票範圍"))
+      .toHaveTextContent("S&P 500 成分股（版本 2026-11-08）");
+  });
+});

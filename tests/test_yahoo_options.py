@@ -255,3 +255,20 @@ def test_real_snapshot_runs_through_the_engine():
     assert statuses == {"long-call": "ok", "bull-call-spread": "ok", "call-fly": "ok"}
     assert all(r.candidates for r in result.results)
     assert result.best_strategy is not None
+
+
+# ---------- V2-01（#404）：股權類別代號對照 ----------
+
+def test_share_class_chain_is_requested_as_brk_hyphen_b_and_labelled_brk_dot_b():
+    """`BRK-B.options.json`：2026-11-24 錄下的真實 Yahoo 第一頁（只留第一個
+    到期日 1795737600＝2026-11-27，`expirationDates`／`strikes` 跟著裁；合約列一字未改：
+    57 call＋53 put，現價 572.36）。Yahoo 對 `BRK.B` 回 404，所以 URL 必須用
+    連字號；快照掛回 canonical `BRK.B`，劇本與搜尋結果都用這個鍵。"""
+    transport = OptionsReplayTransport()
+    snap = YahooOptionsClient(transport).fetch_chain("BRK.B", now=lambda: RECORDED_AT)
+    assert transport.option_calls
+    assert all("/v7/finance/options/BRK-B?" in u for u in transport.option_calls)
+    assert snap.symbol == "BRK.B"
+    assert snap.spot == 572.36
+    assert len(snap.contracts) == 110
+    assert {c.expiry for c in snap.contracts} == {"2026-11-27"}

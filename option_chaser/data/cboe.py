@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 from ..models import (SCHEMA_VERSION, ChainSnapshot, FetchError, OptionContract,
                       RateLimitedError, describe_fetch_exception)
+from ..symbols import canonical_symbol, cboe_symbol
 
 _URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{symbol}.json"
 _TIMEOUT_SECONDS = 15.0
@@ -121,8 +122,9 @@ def map_payload(symbol: str, payload: dict, fetched_at: str) -> ChainSnapshot:
 
 def fetch_chain(symbol: str, http_get=_http_get) -> ChainSnapshot:
     fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    symbol = canonical_symbol(symbol)   # 快照掛 canonical 代號（#404）
     try:
-        payload = json.loads(http_get(_URL.format(symbol=symbol.upper())))
+        payload = json.loads(http_get(_URL.format(symbol=cboe_symbol(symbol))))
         return map_payload(symbol, payload, fetched_at)
     except FetchError:
         raise

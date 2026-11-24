@@ -86,6 +86,22 @@ def test_fetch_chain_maps_via_fake_yfinance(monkeypatch):
     datetime.fromisoformat(snap.fetched_at)  # fetched_at must parse as ISO datetime
 
 
+def test_share_class_is_requested_from_yfinance_with_the_hyphen(monkeypatch):
+    """V2-01（#404）：yfinance 走 Yahoo，只認 `BRK-B`；快照掛 canonical `BRK.B`。"""
+    asked = []
+    record = {"contractSymbol": "BRKB261218C00500000", "strike": 500.0,
+              "bid": 80.0, "ask": 81.0}
+
+    def factory(symbol):
+        asked.append(symbol)
+        return _FakeTicker(symbol, spot=572.0, options=("2026-12-18",), records=[record])
+
+    _install_fake_yfinance(monkeypatch, factory)
+    snap = fetch_chain("BRK.B")
+    assert asked == ["BRK-B"]
+    assert snap.symbol == "BRK.B"
+
+
 def test_fetch_chain_raises_fetcherror_on_yf_exception(monkeypatch):
     def _raising_ticker(symbol):
         raise RuntimeError("boom")

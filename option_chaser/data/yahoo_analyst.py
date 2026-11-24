@@ -34,6 +34,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from ..models import FetchError, describe_fetch_exception
+from ..symbols import yahoo_symbol
 from .dividends import _TIMEOUT_SECONDS, _USER_AGENT
 
 _NY = ZoneInfo("America/New_York")
@@ -359,9 +360,11 @@ class YahooClient:
         raise YahooError("Yahoo crumb 重取後仍被拒絕（401）")
 
     def fetch(self, symbol: str) -> YahooSymbolData:
+        # 股權類別：Yahoo 只認 `BRK-B`（`BRK.B` 回 404），見 `option_chaser.symbols`。
+        upstream = quote(yahoo_symbol(symbol))
         summary = parse_quote_summary(self.get_with_crumb(
-            SUMMARY_URL.format(symbol=quote(symbol)), "分析師資料"))
-        chart = self._get(CHART_URL.format(symbol=quote(symbol)))
+            SUMMARY_URL.format(symbol=upstream), "分析師資料"))
+        chart = self._get(CHART_URL.format(symbol=upstream))
         _raise_for_status(chart, "股價／分割")
         splits, weekly = parse_chart(chart.body)
         return YahooSymbolData(summary, splits, weekly)

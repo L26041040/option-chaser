@@ -33,6 +33,7 @@ from option_chaser.consensus import (AnalystTargetRecord, ConsensusCrossCheck,
 from option_chaser.data.yahoo_analyst import (YahooClient, YahooError,
                                               YahooSymbolData, closes_by_close_date,
                                               split_basis_through)
+from option_chaser.symbols import canonical_symbol
 
 COVERAGES = ("complete", "partial", "unknown")
 
@@ -140,6 +141,8 @@ class YahooAnalystSource:
         self.client = YahooClient(transport)
 
     def fetch(self, symbol: str, today: date) -> ProviderResult:
+        # 紀錄一律掛 canonical 代號（`BRK.B`）；上游寫法由 client 換（#404）。
+        symbol = canonical_symbol(symbol)
         try:
             data = self.client.fetch(symbol)
         except YahooError as e:

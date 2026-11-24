@@ -151,7 +151,7 @@ describe("OpportunityPage：資料來源狀態與共識清單", () => {
 
   it("母體資訊：名稱、有資料／資料不足檔數、as_of、覆蓋率警示；門檻連到設定頁", async () => {
     await renderReady();
-    const universe = await screen.findByRole("region", { name: "搜尋母體" });
+    const universe = await screen.findByRole("region", { name: "掃描股票範圍" });
     expect(universe).toHaveTextContent("自訂清單");
     expect(universe).toHaveTextContent("共 7 檔");
     expect(universe).toHaveTextContent("有資料 5 檔");
@@ -520,5 +520,26 @@ describe("OpportunityPage：存成劇本", () => {
     expect(window.location.hash).toBe("#/opportunity");
     expect(within(row).getByRole("button", { name: "存成劇本" })).toBeEnabled();
     expect(screen.queryByText(/已存成劇本|已建立劇本|劇本已建立/)).not.toBeInTheDocument();
+  });
+});
+
+describe("掃描股票範圍（V2-01／#404）", () => {
+  it("S&P 500 成分股：顯示名稱、檔數與清單版本日期，不標暫定", async () => {
+    const sp500: OpportunityConsensusResponse = {
+      ...CONSENSUS,
+      universe: { ...CONSENSUS.universe, id: "sp500", label: "S&P 500 成分股",
+                  provisional: false, version_date: "2026-11-08", symbols: 503 },
+    };
+    await renderReady({ consensus: { status: 200, body: sp500 } });
+    const universe = await screen.findByRole("region", { name: "掃描股票範圍" });
+    expect(within(universe).getByRole("heading")).toHaveTextContent(/^S&P 500 成分股$/);
+    expect(universe).toHaveTextContent("共 503 檔");
+    expect(universe).toHaveTextContent("版本 2026-11-08");
+  });
+
+  it("自訂清單沒有版本日期，不顯示版本", async () => {
+    await renderReady();
+    const universe = await screen.findByRole("region", { name: "掃描股票範圍" });
+    expect(universe).not.toHaveTextContent("版本");
   });
 });

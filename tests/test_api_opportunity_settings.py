@@ -2,7 +2,7 @@
 
 沿用既有 `GET`／`PUT /api/settings`，不加 DDL、不加端點。釘住四件事：
 
-1. 未設定時 GET 回預設（20／10／全部家族／return／大型股樣本）；
+1. 未設定時 GET 回預設（20／10／全部家族／return／S&P 500 成分股）；
 2. 兩道門檻各自存取、互不影響（PUT 只送其中一個欄位時，其餘欄位不動）；
 3. 範圍與型別驗證沿用既有 settings 的 422 格式；
 4. 既有鍵（market_data／historical_iv）行為不變——而且**只送既有兩鍵的
@@ -12,6 +12,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from api_app import sp500_constituents
 from api_app.main import create_app
 from api_app.storage.memory import MemoryStorage
 from tests._role_session import superuser_cookies
@@ -20,7 +21,7 @@ _DEFAULT = {"mode": "default", "provider": None}
 _BASE = {"market_data": _DEFAULT, "historical_iv": _DEFAULT}
 
 EXPECTED_DEFAULTS = {
-    "universe_id": "sample-large-cap",
+    "universe_id": "sp500",
     "custom_symbols": [],
     "percentile_max": 20,
     "dispersion_max": 10,
@@ -61,8 +62,11 @@ def test_view_carries_the_options_the_settings_block_needs(client):
     """母體文案、家族、排序、上限與預設值都由後端給，前端不自己寫一份。"""
     options = client.get("/api/settings").json()["opportunity_search_options"]
     universes = {u["id"]: u for u in options["universes"]}
-    assert universes["sample-large-cap"]["label"] == "大型股樣本（暫定，清單來源待 #382）"
-    assert universes["sample-large-cap"]["provisional"] is True
+    assert list(universes) == ["sp500", "custom"]
+    assert universes["sp500"]["label"] == "S&P 500 成分股"
+    assert universes["sp500"]["provisional"] is False
+    assert universes["sp500"]["symbol_count"] == len(sp500_constituents.CONSTITUENTS)
+    assert universes["sp500"]["version_date"] == sp500_constituents.VERSION
     assert universes["custom"]["label"] == "自訂清單"
     assert options["strategies"] == ["single-leg", "vertical-spread", "butterfly"]
     assert options["sorts"] == [
@@ -127,12 +131,45 @@ def test_strategies_follow_canonical_family_order_without_duplicates(client):
     assert _opp(client)["strategies"] == ["single-leg", "butterfly"]
 
 
-def test_switching_back_to_the_sample_keeps_the_custom_list(client):
+def test_switching_back_to_sp500_keeps_the_custom_list(client):
     _put(client, {"universe_id": "custom", "custom_symbols": ["TSLA"]})
-    _put(client, {"universe_id": "sample-large-cap"})
+    _put(client, {"universe_id": "sp500"})
     got = _opp(client)
-    assert got["universe_id"] == "sample-large-cap"
+    assert got["universe_id"] == "sp500"
     assert got["custom_symbols"] == ["TSLA"]
+
+
+# ---------- V2-01（#404）：舊設定遷移、股權類別 ----------
+
+def test_legacy_sample_value_from_an_old_frontend_is_saved_as_sp500(client):
+    """舊前端送 `sample-large-cap`（大型股樣本已退役）不報錯，存成 `sp500`。"""
+    assert _put(client, {"universe_id": "sample-large-cap"}).status_code == 200
+    assert _opp(client)["universe_id"] == "sp500"
+
+
+def test_stored_legacy_sample_setting_reads_back_as_sp500_and_still_saves(client, db):
+    """V2-01 之前存下的 SU/SA 設定（`sample-large-cap`＋自己的門檻）讀出來是
+    S&P 500，門檻不動；之後只改一個欄位也照常存得進去。"""
+    from api_app.storage import DataSourceSettings, UsageSetting
+    db.save_settings(DataSourceSettings(
+        market_data=UsageSetting(mode="default"), historical_iv=UsageSetting(mode="default"),
+        updated_at="2026-11-01T00:00:00+00:00", owner_id="solo",
+        opportunity_search={"universe_id": "sample-large-cap", "custom_symbols": ["TSLA"],
+                            "percentile_max": 30, "dispersion_max": 12,
+                            "strategies": ["single-leg"], "sort": "cost"}))
+    got = _opp(client)
+    assert got == {**EXPECTED_DEFAULTS, "universe_id": "sp500", "custom_symbols": ["TSLA"],
+                   "percentile_max": 30, "dispersion_max": 12,
+                   "strategies": ["single-leg"], "sort": "cost"}
+    assert _put(client, {"dispersion_max": 15}).status_code == 200
+    assert _opp(client) == {**got, "dispersion_max": 15}
+
+
+def test_custom_share_class_symbols_are_saved_in_canonical_dot_form(client):
+    resp = _put(client, {"universe_id": "custom",
+                         "custom_symbols": ["BRK-B", "GOOGL", "GOOG", "BRK.B", "BF-B"]})
+    assert resp.status_code == 200, resp.text
+    assert _opp(client)["custom_symbols"] == ["BRK.B", "GOOGL", "GOOG", "BF.B"]
 
 
 # ---------- 驗證（沿用既有 settings 的 422 格式） ----------
@@ -189,7 +226,7 @@ def test_custom_universe_check_sees_the_already_saved_list(client):
     assert _opp(client)["universe_id"] == "custom"
 
 
-@pytest.mark.parametrize("payload", [{"universe_id": "sp500"}, {"sort": "probability"},
+@pytest.mark.parametrize("payload", [{"universe_id": "nasdaq100"}, {"sort": "probability"},
                                      {"sort": None}, {"bogus": 1}])
 def test_unknown_values_and_keys_are_rejected(client, payload):
     assert _put(client, payload).status_code == 422

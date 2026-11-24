@@ -47,6 +47,9 @@ def build_samples() -> tuple[dict, dict]:
         client = TestClient(main_module.create_app(
             identity_resolver=lambda: "solo", storage=storage,
             analyst_source=FixtureAnalystSource(FIXTURE), clock=lambda: NOW,
+            # 更新母體固定成「優先更新的 50 檔＋自訂 7 檔」：預設範圍改成
+            # S&P 500（#404）後，樣本仍只示範更新機制，不帶幾百檔成分股。
+            consensus_refresh_symbol_cap=57,
             consensus_refresh_policy=main_module.consensus_cache.RefreshPolicy(
                 batch_size=25)))   # 一批涵蓋到 GGG（依代號排序第 23 檔）
         client.put("/api/settings", json={

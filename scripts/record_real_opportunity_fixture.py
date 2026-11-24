@@ -25,6 +25,7 @@ from pathlib import Path
 from option_chaser import service
 from option_chaser.data.snapshot import save_snapshot, snapshot_today
 from option_chaser.data.yahoo_analyst import HttpResponse, UrllibTransport, YahooClient
+from option_chaser.symbols import canonical_symbol, yahoo_symbol
 
 FIXTURES = Path("tests/fixtures")
 
@@ -46,15 +47,21 @@ class RecordingTransport(UrllibTransport):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("symbol")
+    parser.add_argument("--skip-chain", action="store_true",
+                        help="只錄 Yahoo 分析師資料，不抓選擇權 chain")
     args = parser.parse_args()
-    symbol = args.symbol.strip().upper()
+    symbol = canonical_symbol(args.symbol)
 
     transport = RecordingTransport()
     YahooClient(transport).fetch(symbol)   # 解析失敗會丟例外：不存半份樣本
+    # 檔名用 Yahoo 那一側的寫法（`BRK-B`）：它錄的是那個 URL 的回應，
+    # 測試的回放 transport 也是依 URL 裡的代號找檔（#404）。
     for kind in ("quote_summary", "chart"):
-        path = FIXTURES / "yahoo" / f"{symbol}.{kind}.json"
+        path = FIXTURES / "yahoo" / f"{yahoo_symbol(symbol)}.{kind}.json"
         path.write_text(transport.bodies[kind], encoding="utf-8")
         print(f"wrote {path}")
+    if args.skip_chain:
+        return 0
 
     snap = service.fetch_chain(symbol)
     out = FIXTURES / f"real_chain_{symbol}_{snapshot_today(snap.fetched_at).isoformat()}.json"

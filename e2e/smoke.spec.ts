@@ -1409,7 +1409,7 @@ test("手機垃圾桶：全選後批次動作立刻在視窗內可操作（QA-FI
 /* ---------- 設定頁（Settings／#124） ---------- */
 
 const OPPORTUNITY_SEARCH_DEFAULTS = {
-  universe_id: "sample-large-cap",
+  universe_id: "sp500",
   custom_symbols: [] as string[],
   percentile_max: 20,
   dispersion_max: 10,
@@ -1433,9 +1433,10 @@ const SETTINGS_VIEW = {
   opportunity_search: OPPORTUNITY_SEARCH_DEFAULTS,
   opportunity_search_options: {
     universes: [
-      { id: "sample-large-cap", label: "大型股樣本（暫定，清單來源待 #382）",
-        provisional: true, symbol_count: 50 },
-      { id: "custom", label: "自訂清單", provisional: false, symbol_count: null },
+      { id: "sp500", label: "S&P 500 成分股", provisional: false, symbol_count: 503,
+        version_date: "2026-11-08" },
+      { id: "custom", label: "自訂清單", provisional: false, symbol_count: null,
+        version_date: null },
     ],
     strategies: ["single-leg", "vertical-spread", "butterfly"],
     sorts: [{ id: "return", label: "目標價情境報酬（高→低）" },
@@ -1583,7 +1584,8 @@ test("手機版：Super Admin 的「機會搜尋」區塊——恢復預設真�
 
   const block = page.getByRole("region", { name: "機會搜尋" });
   await expect(block).toBeVisible();
-  await expect(block.getByText("大型股樣本（暫定，清單來源待 #382）")).toBeVisible();
+  await expect(block.getByRole("radio", { name: "S&P 500 成分股（503 檔，版本 2026-11-08）" }))
+    .toBeChecked();
   const percentile = block.getByLabel("分歧度歷史百分位門檻（%）");
   await percentile.fill("35");
   await block.getByRole("button", { name: "恢復預設" }).first().click();

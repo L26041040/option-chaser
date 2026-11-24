@@ -12,8 +12,8 @@
  *   另一道門檻與本區塊其他尚未儲存的修改都不動。
  * - 值的驗證交給後端：輸入框清空或打了不合法的數字照樣送出，畫面顯示
  *   後端回來的訊息，前端不自己吞掉、也不另寫一份規則。
- * - 選項（母體文案、家族、排序、預設值）由後端給；大型股樣本是暫定清單，
- *   文案照後端給的標示，絕不寫成 S&P 500。
+ * - 選項（掃描股票範圍文案、家族、排序、預設值）由後端給。S&P 500 成分股
+ *   旁邊照後端給的值顯示檔數與清單版本日期（V2-01／#404）。
  */
 import { useState } from "react";
 
@@ -22,6 +22,7 @@ import {
   type OpportunitySearchPatch,
   type OpportunitySearchSettings as Opp,
   type SettingsView,
+  type UniverseOption,
 } from "./api";
 import { FAMILY_LABELS } from "./family";
 
@@ -78,6 +79,14 @@ function parseSymbols(text: string): string[] {
 
 /** 舊後端（回滾期間的過期分頁）沒有 `opportunity_search_options` 時不渲染，
  *  不讓整個 Settings 頁崩潰。 */
+/** 範圍選項後面的「（503 檔，版本 2026-11-08）」；自訂清單沒有固定檔數，不顯示。
+ *  舊後端沒有 `version_date` 時只顯示檔數。 */
+function universeFacts(u: UniverseOption): string {
+  if (u.symbol_count == null) return "";
+  const version = u.version_date ? `，版本 ${u.version_date}` : "";
+  return `（${u.symbol_count} 檔${version}）`;
+}
+
 export default function OpportunitySearchSettings(props: {
   view: SettingsView;
   onSaved: (next: SettingsView) => void;
@@ -190,7 +199,7 @@ function OpportunitySearchSettingsForm({
       ))}
 
       <fieldset className="settings-fieldset">
-        <legend className="caption">搜尋母體</legend>
+        <legend className="caption">掃描股票範圍</legend>
         {options.universes.map((u) => (
           <label className="settings-choice" key={u.id}>
             <input
@@ -199,7 +208,7 @@ function OpportunitySearchSettingsForm({
               checked={draft.universe_id === u.id}
               onChange={() => edit({ universe_id: u.id })}
             />
-            <span>{u.label}</span>
+            <span>{u.label}{universeFacts(u)}</span>
           </label>
         ))}
         {draft.universe_id === "custom" && (

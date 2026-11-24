@@ -34,6 +34,7 @@ from typing import Callable
 from urllib.parse import quote
 
 from ..models import ChainSnapshot, FetchError, RateLimitedError
+from ..symbols import canonical_symbol, yahoo_symbol
 from .yahoo_analyst import Transport, YahooClient, YahooError
 from .yf import map_rows
 
@@ -131,13 +132,15 @@ class YahooOptionsClient:
         self._client = client or YahooClient(transport)
 
     def _page(self, symbol: str, epoch: int | None) -> OptionsPage:
-        url = OPTIONS_URL.format(symbol=quote(symbol.upper())) + (
+        # 股權類別：Yahoo 只認 `BRK-B`（`BRK.B` 回 404），見 `option_chaser.symbols`。
+        url = OPTIONS_URL.format(symbol=quote(yahoo_symbol(symbol))) + (
             f"?date={epoch}" if epoch is not None else "")
         return parse_options_page(self._client.get_with_crumb(
             url, "選擇權資料", not_found=_NOT_FOUND))
 
     def fetch_chain(self, symbol: str, *,
                     now: Callable[[], datetime] | None = None) -> ChainSnapshot:
+        symbol = canonical_symbol(symbol)   # 快照掛 canonical 代號（#404）
         try:
             first = self._page(symbol, None)
             rows = dict(first.rows)

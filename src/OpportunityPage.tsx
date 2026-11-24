@@ -679,13 +679,14 @@ function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
   const u = data.universe;
   const incomplete = (u.coverage.partial ?? 0) + (u.coverage.unknown ?? 0);
   return (
-    <section className="card" aria-label="搜尋母體">
+    <section className="card" aria-label="掃描股票範圍">
       <h2 className="section-title">
         {u.label}
         {u.provisional && <span className="tag warn">暫定</span>}
       </h2>
       <p className="opp-facts">
         <span>共 {u.symbols} 檔</span>
+        {u.version_date && <span>版本 {u.version_date}</span>}
         <span>有資料 {u.with_data} 檔</span>
         <span>資料不足 {u.insufficient} 檔</span>
         <span>資料日 {u.as_of ?? "—"}</span>

@@ -354,3 +354,25 @@ def test_unparseable_retry_after_is_ignored():
     result, _ = _fetch("AAPL", summary_statuses=[(429, {"Retry-After": "inf"})])
     assert "429" in result.error and "Retry-After" not in result.error
     assert result.rate_limited is True and result.retry_after is None
+
+
+# ---------- V2-01（#404）：股權類別代號對照 ----------
+
+@pytest.mark.parametrize("symbol, yahoo", [("BRK.B", "BRK-B"), ("BF.B", "BF-B")])
+def test_share_class_symbols_hit_yahoo_with_the_hyphen_but_stay_canonical(symbol, yahoo):
+    """fixture 是 2026-11-24 錄下的真實 Yahoo 回應（`BRK-B`／`BF-B`）；
+    Yahoo 對 `BRK.B` 回 404，所以 URL 必須用連字號，紀錄則掛回 `BRK.B`。"""
+    result, transport = _fetch(symbol)
+    assert result.error is None
+    assert len(result.records) > 0
+    assert {r.symbol for r in result.records} == {symbol}
+    data_urls = [u for u in transport.calls if "quoteSummary" in u or "/chart/" in u]
+    assert data_urls and all(f"/{yahoo}?" in u for u in data_urls)
+    assert not any(f"/{symbol}?" in u for u in transport.calls)
+
+
+def test_hyphen_input_is_treated_as_the_same_stock():
+    dot, _ = _fetch("BRK.B")
+    hyphen, _ = _fetch("BRK-B")
+    assert hyphen.error is None
+    assert len(hyphen.records) == len(dot.records)

@@ -30,6 +30,7 @@ from ..dividends import (DividendHistory, history_from_dict, history_to_dict,
                          parse_fmp_dividends, parse_nasdaq_dividends,
                          parse_yahoo_dividends)
 from ..models import FetchError, describe_fetch_exception
+from ..symbols import yahoo_symbol
 
 _TIMEOUT_SECONDS = 15.0
 _USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -78,7 +79,9 @@ def fetch_dividends(symbol: str, today: date, http_get=_http_get) -> DividendHis
     """
     errors: list[str] = []
     try:
-        return parse_yahoo_dividends(symbol, http_get(YAHOO_URL.format(symbol=symbol)), today)
+        # 股權類別：Yahoo 只認 `BF-B`（#404，`option_chaser.symbols`）
+        return parse_yahoo_dividends(
+            symbol, http_get(YAHOO_URL.format(symbol=yahoo_symbol(symbol))), today)
     except Exception as e:  # noqa: BLE001 — 連線與解析失敗一律走下一備援
         errors.append(f"Yahoo：{describe_fetch_exception(e)}")
 

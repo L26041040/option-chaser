@@ -2011,7 +2011,7 @@ describe("SW-10（#340）／PB-12（#302）：全站常駐頁尾；首頁 Beta �
      "重設權限後管理中心不再可用", async () => {
     let role = "superadmin";
     const OPP_DEFAULTS = {
-      universe_id: "sample-large-cap", custom_symbols: [], percentile_max: 20,
+      universe_id: "sp500", custom_symbols: [], percentile_max: 20,
       dispersion_max: 10, strategies: ["single-leg"], sort: "return",
     };
     const spy = vi.fn(async (url: string) => {

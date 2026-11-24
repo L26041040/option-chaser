@@ -93,7 +93,7 @@ def build_consensus(client: TestClient) -> dict:
 def run_search(client: TestClient, probe: ChainProbe, p_max: float, d_max: float) -> dict:
     r = client.put("/api/settings", json={
         "market_data": _DEFAULT, "historical_iv": _DEFAULT,
-        "opportunity_search": {"universe_id": "sample-large-cap",
+        "opportunity_search": {"universe_id": "sp500",
                                "percentile_max": p_max, "dispersion_max": d_max}})
     r.raise_for_status()
     consensus = client.get("/api/opportunity/consensus").json()
