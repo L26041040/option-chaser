@@ -3093,7 +3093,7 @@ test("T16（#232）：Butterfly 兩個損益兩平點與獲利區間都在分析
     `$${butterflyCand.profit_region[1].toFixed(2)}`);
 
   // AC 明文性質：broken-wing 的 Max Loss 超過已付權利金，兩者不相等。
-  const maxLossRow = reportCard.getByText("Max Loss", { exact: true }).locator("xpath=..");
+  const maxLossRow = reportCard.getByText("Max Loss / 股", { exact: true }).locator("xpath=..");
   await expect(maxLossRow).toContainText(
     `$${(butterflyCand.max_loss_per_contract / 100).toFixed(2)}`);
   await expect(maxLossRow).not.toContainText(

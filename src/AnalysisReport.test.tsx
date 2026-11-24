@@ -61,16 +61,19 @@ describe("Risk / Payoff", () => {
     await expand();
     const breakevenRow = screen.getByText("Breakeven").closest(".row")!;
     expect(breakevenRow).toHaveTextContent(`$${real.breakeven_points[0].toFixed(2)}`);
-    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    const maxLossRow = screen.getByText("Max Loss / 股").closest(".row")!;
     expect(maxLossRow).toHaveTextContent(
       `$${(real.max_loss_per_contract / 100).toFixed(2)}`);
+    // V2-06（#408）：每口＝後端 max_loss_per_contract 原值（1 口 = 100 股）。
+    const perContractRow = screen.getByText("Max Loss / 口").closest(".row")!;
+    expect(perContractRow).toHaveTextContent(`$${real.max_loss_per_contract.toFixed(2)}`);
   });
 
   it("T16（#232）：既有四策略 max_loss_per_contract／natural_cost 逐位元" +
      "相同——Max Loss 改讀前者不改變既有畫面數字", async () => {
     render(<AnalysisReport view={view} result={result} candidate={real} />);
     await expand();
-    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    const maxLossRow = screen.getByText("Max Loss / 股").closest(".row")!;
     expect(maxLossRow).toHaveTextContent(`$${real.natural_cost.toFixed(2)}`);
   });
 
@@ -142,9 +145,10 @@ describe("Risk / Payoff", () => {
     });
     render(<AnalysisReport view={view} result={result} candidate={brokenWing} />);
     await expand();
-    const maxLossRow = screen.getByText("Max Loss").closest(".row")!;
+    const maxLossRow = screen.getByText("Max Loss / 股").closest(".row")!;
     expect(maxLossRow).toHaveTextContent("$3.49");
     expect(maxLossRow).not.toHaveTextContent("$0.49");
+    expect(screen.getByText("Max Loss / 口").closest(".row")!).toHaveTextContent("$349.00");
   });
 
   it("T04（#220，#217 決策 D）：Execution Friction 這一列已移除，不再顯示", async () => {

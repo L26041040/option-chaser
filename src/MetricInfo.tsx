@@ -21,9 +21,15 @@ export default function MetricInfo({ metric }: { metric: MetricHelpKey }) {
  * 一列「指標說明：名稱ⓘ 名稱ⓘ …」。給每列重複出現同一組數字的清單與
  * 結果表（手機版表頭隱藏）用：說明只放一次，不在每一列重複放圖示。
  */
-export function MetricHelpRow({ metrics }: { metrics: readonly MetricHelpKey[] }) {
+export function MetricHelpRow({
+  metrics,
+  className,
+}: {
+  metrics: readonly MetricHelpKey[];
+  className?: string;
+}) {
   return (
-    <p className="caption metric-help-row">
+    <p className={`caption metric-help-row${className ? ` ${className}` : ""}`}>
       <span>指標說明</span>
       {metrics.map((m) => (
         <span key={m} className="metric-help-item">

@@ -4800,6 +4800,38 @@ body {
   font-weight: 700;
 }
 
+/* V2-06（#408）：成本／最大損失的每股與每口，各一行。 */
+.opp-table td .opp-unit {
+  display: block;
+}
+
+.opp-table td .opp-unit + .opp-unit {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+/* 表頭：標的欄下方一行「目前股價ⓘ · 目標漲跌幅ⓘ」（股票層級）；其他有 ⓘ 的欄
+   標題允許換行，不撐寬整張表。 */
+.opp-table th {
+  white-space: normal;
+  vertical-align: bottom;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  height: auto;
+}
+
+.opp-table th .opp-th-main,
+.opp-table th .opp-th-sub {
+  display: block;
+}
+
+.opp-table th .opp-th-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  font-size: 11px;
+}
+
 .opp-table td.opp-save {
   white-space: normal;
 }
@@ -4841,6 +4873,11 @@ body {
     height: auto;
     padding-top: 10px;
     padding-bottom: 10px;
+  }
+
+  /* 桌面：表頭各欄自己有 ⓘ，手機用的說明列不重複出現。 */
+  .opp-help-mobile {
+    display: none;
   }
 }
 
@@ -4888,9 +4925,24 @@ body {
     color: var(--mute);
   }
 
+  /* V2-06（#408）：卡片頂端整寬的是股票層級（代號、目前股價、目標漲跌幅），
+     下面兩欄格線才是這個策略的數字，兩層用分隔線隔開。 */
   .opp-table td.opp-symbol {
+    grid-column: 1 / -1;
     font-size: 17px;
     font-weight: 700;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--line);
+  }
+
+  .opp-table td.opp-symbol .opp-quote {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 12px;
+  }
+
+  .opp-table td.opp-symbol .opp-quote > span {
+    min-width: 0;
   }
 
   .opp-table td.opp-save {

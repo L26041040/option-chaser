@@ -11,7 +11,7 @@
 > - **已實作（只接固定測試資料）**：U1 共識計算純函式（`option_chaser/consensus.py`）；U2 的資料來源**介面**＋全站共識快取（不含 owner_id）＋每日 cron（`api_app/analyst_source.py`、`consensus_cache.py`、`GET /api/cron/consensus-refresh`）；U3 跨標的搜尋後端（`POST /api/opportunity/search`，重用既有 `_analyze()`，計算等價、續跑、錯誤隔離、fetch_cap、Global Vendor Fuse）；U4 Settings 選填鍵 `opportunity_search`＋設定頁區塊；U5 機會搜尋頁 `#/opportunity`（共識清單、逐檔結果、跨標的排序、存成劇本；只限 SU/SA）。真瀏覽器＋本機後端驗證：`scripts/opportunity_verify.mjs`。
 > - **仍缺**：**真實分析師資料來源**——正式站預設「尚未設定」，畫面照實顯示，不能搜尋；接哪個來源、能不能接，待 #384（阻礙 B1 公開顯示、B2 自動化擷取條款、B3 覆蓋偏差與分割，見 #389 §12）。**U0**（小樣本免費資料探測）、**U6**（擴到 500 檔＋成本護欄）、**U7**（歷史達標率研究）**都沒有做**；U8 ETF 另案。
 > - **暫定值（可設定、未寫死，待決策票定案後只改設定）**：#381 目標月份＝今天所在月＋12 個月（`fixed_12m`）；#382 母體＝「大型股樣本（暫定）」50 檔靜態清單或自訂清單；#383 每檔每家族一列、不帶 best/worst、排序報酬／成本／最大損失；#385 資料品質規則 `provisional-389`（N_min 5、V 12 月、F 90 天、φ 0.5、H_min 24、L 60）；#386 fetch_cap 50、cron 平日一次、只開放 SU/SA；#387 未做；#388 UI 依 OS-05 現況，未經 Owner 原型審核。
-> - 結果表的「最大損失 / 股」＝`max_loss_per_contract ÷ 100`，與淨成本、與既有詳細頁 Max Loss 同一個每股口徑（#395）。
+> - 結果表的成本、最大損失同時顯示每股與每口（V2-06／#408，取代 #395 的「最大損失 / 股」單欄）：成本每股＝`entry_cost`、每口＝× 100；最大損失每口＝`max_loss_per_contract`、每股＝÷ 100；劇本詳細頁同樣兩種單位。
 
 ---
 

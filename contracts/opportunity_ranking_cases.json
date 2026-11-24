@@ -1,0 +1,16 @@
+{
+  "_comment": "V2-06（#408）：結果表只改呈現、不改排名。後端 tests/test_opportunity_ranking_cases.py（sort_rows）與前端 src/OpportunityPage.test.tsx（rankOpportunities 與畫面上的列順序）讀同一份。expected 是照規則手排的字面值（return 高→低、cost／max_loss 低→高，同值依 symbol 再 family），也是 V2-06 改版前畫面上的順序。BBB butterfly 是 broken-wing：最大損失（每口 120）大於成本 × 100（50），所以 cost 與 max_loss 的順序不同。",
+  "rows": [
+    { "symbol": "AAA", "family": "vertical-spread", "entry_cost": 0.81, "max_loss_per_contract": 81.0, "target_return": 2.7 },
+    { "symbol": "AAA", "family": "single-leg", "entry_cost": 5.6, "max_loss_per_contract": 560.0, "target_return": 1.5 },
+    { "symbol": "AAA", "family": "butterfly", "entry_cost": 2.59, "max_loss_per_contract": 259.0, "target_return": 1.32 },
+    { "symbol": "BBB", "family": "butterfly", "entry_cost": 0.5, "max_loss_per_contract": 120.0, "target_return": 1.5 },
+    { "symbol": "CCC", "family": "vertical-spread", "entry_cost": 2.59, "max_loss_per_contract": 259.0, "target_return": 0.4 },
+    { "symbol": "DDD", "family": "single-leg", "entry_cost": 1.2, "max_loss_per_contract": 120.0, "target_return": 3.1 }
+  ],
+  "expected": {
+    "return": ["DDD/single-leg", "AAA/vertical-spread", "AAA/single-leg", "BBB/butterfly", "AAA/butterfly", "CCC/vertical-spread"],
+    "cost": ["BBB/butterfly", "AAA/vertical-spread", "DDD/single-leg", "AAA/butterfly", "CCC/vertical-spread", "AAA/single-leg"],
+    "max_loss": ["AAA/vertical-spread", "BBB/butterfly", "DDD/single-leg", "AAA/butterfly", "CCC/vertical-spread", "AAA/single-leg"]
+  }
+}

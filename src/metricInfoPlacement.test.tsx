@@ -102,8 +102,15 @@ describe("機會搜尋頁的 ⓘ", () => {
 
     await user.click(within(selected).getByRole("button", { name: "搜尋選擇權" }));
     const results = await screen.findByRole("region", { name: "搜尋結果" });
-    expectHelp(results, "costAndMaxLoss");
-    expectHelp(results, "scenarioReturn");
+    // V2-06（#408）：桌面在表頭各欄、手機（表頭隱藏）在區塊頂端的說明列，
+    // 兩處各一顆（CSS 只讓其中一處出現）。
+    const thead = results.querySelector("thead") as HTMLElement;
+    const mobileHelp = results.querySelector(".opp-help-mobile") as HTMLElement;
+    for (const scope of [thead, mobileHelp]) {
+      for (const key of ["currentPrice", "targetUpside", "costAndMaxLoss", "scenarioReturn"] as const) {
+        expectHelp(scope, key);
+      }
+    }
   });
 });
 

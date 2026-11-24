@@ -70,6 +70,7 @@ import {
   hasPriceRange, isRetryDisabledByRateLimit, money, moneyOrDash, rateLimitCountdownText,
   rateLimitHeadline, type DirectionTag,
 } from "./scenarios";
+import { perContract } from "./contractUnits";
 import { useCountdownSeconds } from "./useCountdown";
 import { useIsDesktop } from "./useIsDesktop";
 
@@ -199,6 +200,8 @@ function EntryPanel({ candidate }: { candidate: Candidate | null }) {
         </Row>
       ))}
       <Row label="淨成本 / 股">{money(candidate.natural_cost)}</Row>
+      {/* V2-06（#408）：每口（1 口 = 100 股）也顯示，跟機會搜尋結果列同一組數字。 */}
+      <Row label="淨成本 / 口">{money(perContract(candidate.natural_cost))}</Row>
       <RiskPayoff candidate={candidate} />
       <PositionSensitivity candidate={candidate} />
     </section>

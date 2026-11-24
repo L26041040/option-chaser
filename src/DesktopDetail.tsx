@@ -99,6 +99,7 @@ import {
 import { expiryOptions, isThinPool, resolveExpiry } from "./expiry";
 import { heatmapProps } from "./heatmap";
 import { formatReturn, money, returnBarWidthPct } from "./scenarios";
+import { perContract, perShare } from "./contractUnits";
 
 /**
  * 排名表的一列（artifact：名次、subtype 標籤、腿位 pill ×1·2·1、劇本
@@ -225,10 +226,14 @@ function EntryTab({ candidate }: { candidate: Candidate }) {
         </tbody>
       </table>
       <Row label="淨成本 / 股">{money(candidate.natural_cost)}</Row>
+      <Row label="淨成本 / 口">{money(perContract(candidate.natural_cost))}</Row>
       {/* 資本／最大損失獨立一列、不是「淨成本」的別名：既有四策略兩者
           恆相等，Butterfly（broken-wing）可能不相等——`RiskPayoff` 的
-          Max Loss 同一套讀法（`max_loss_per_contract`，每口＝÷100）。 */}
-      <Row label="資本／最大損失（每口）">{money(candidate.max_loss_per_contract / 100)}</Row>
+          Max Loss 同一套讀法（`max_loss_per_contract` 是每口）。V2-06（#408）：
+          原本標「（每口）」卻顯示 ÷100 的每股值；改成每股、每口各一列、照實標
+          單位（換算只在 `contractUnits.ts`），跟機會搜尋結果列同一組數字。 */}
+      <Row label="資本／最大損失 / 股">{money(perShare(candidate.max_loss_per_contract))}</Row>
+      <Row label="資本／最大損失 / 口">{money(candidate.max_loss_per_contract)}</Row>
     </div>
   );
 }

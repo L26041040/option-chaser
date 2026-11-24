@@ -1,15 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { prDisplay, prLabel } from "./dispersionRank";
-import {
-  METRIC_HELP,
-  metricHelpLabel,
-  targetUpsideLabel,
-  targetUpsidePct,
-  type MetricHelpKey,
-} from "./metricHelp";
+import { METRIC_HELP, metricHelpLabel, type MetricHelpKey } from "./metricHelp";
 import { ratioPct } from "./opportunity";
 import { money } from "./scenarios";
+import { formatUpside, targetUpsidePct } from "./targetUpside";
 
 const allText = (key: MetricHelpKey) => {
   const h = METRIC_HELP[key];
@@ -91,17 +86,15 @@ describe("說明裡的範例數字與程式口徑一致", () => {
   });
 
   it("目標漲跌幅 = (平均目標價 ÷ 目前股價 − 1) × 100%；$120 ÷ $100 → +20.0%", () => {
-    expect(targetUpsidePct(120, 100)).toBeCloseTo(20, 10);
-    expect(targetUpsidePct(90, 120)).toBeCloseTo(-25, 10);
-    expect(targetUpsidePct(null, 100)).toBeNull();
-    expect(targetUpsidePct(120, null)).toBeNull();
-    expect(targetUpsidePct(120, 0)).toBeNull();
-    expect(targetUpsideLabel(targetUpsidePct(120, 100))).toBe("+20.0%");
-    expect(targetUpsideLabel(targetUpsidePct(90, 120))).toBe("-25.0%");
-    expect(targetUpsideLabel(null)).toBe("—");
+    // 公式與小數位規則只有一套（`targetUpside.ts`，與後端同一份案例）：說明裡的
+    // 範例數字用它算出來的畫面文字比對。
+    expect(formatUpside(targetUpsidePct(120, 100)!)).toBe("+20.0%");
     const text = allText("targetUpside");
     expect(text).toContain("(平均目標價 ÷ 目前股價 − 1) × 100%");
-    expect(text).toContain(`平均目標價 ${money(120)}、目前股價 ${money(100)} → +20.0%`);
+    expect(text).toContain(
+      `平均目標價 ${money(120)}、目前股價 ${money(100)} → ${formatUpside(targetUpsidePct(120, 100)!)}`);
+    // 小數位規則寫進說明，與後端 ROUND_HALF_UP 一致。
+    expect(text).toContain("四捨五入到小數第一位（整好一半時遠離零）");
     expect(text).toMatch(/股價日期/);
     expect(allText("currentPrice")).toMatch(/股價日期/);
   });

@@ -14,9 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import consensusSample from "../contracts/opportunity_consensus_sample.json";
 import detailSample from "../contracts/opportunity_detail_sample.json";
+import rankingCases from "../contracts/opportunity_ranking_cases.json";
 import statusSample from "../contracts/opportunity_consensus_status_sample.json";
 import searchSample from "../contracts/opportunity_search_sample.json";
 import OpportunityPage from "./OpportunityPage";
+import { rankOpportunities } from "./opportunity";
 import {
   ApiError,
   type ConsensusRefreshStatusResponse,
@@ -478,7 +480,7 @@ describe("OpportunityPage：搜尋與續跑", () => {
     expect(searchBodies(spy)).toHaveLength(1);
   });
 
-  it("結果列顯示策略、履約價、到期日、目標月份、成本（每股）、最大損失（每股）、報酬、損益兩平", async () => {
+  it("結果列顯示策略、履約價、到期日、目標月份、成本、最大損失、報酬、損益兩平", async () => {
     await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
     await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
     const results = await screen.findByRole("region", { name: "搜尋結果" });
@@ -491,19 +493,79 @@ describe("OpportunityPage：搜尋與續跑", () => {
     expect(spread).toHaveTextContent("$112.81");
   });
 
-  it("最大損失與詳細頁同一口徑：每股（後端每口 ÷ 100），欄名如實寫每股", async () => {
+  it("成本與最大損失同時顯示每股與每口（V2-06／#408）：成本每口＝entry_cost × 100、最大損失每口＝後端原值", async () => {
     await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
     await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
     const results = await screen.findByRole("region", { name: "搜尋結果" });
-    expect(within(results).getByRole("columnheader", { name: "最大損失 / 股" })).toBeInTheDocument();
-    expect(within(results).queryByRole("columnheader", { name: /每口|\/ 口/ })).not.toBeInTheDocument();
-    const maxLoss = (name: RegExp) => within(results).getByRole("row", { name })
-      .querySelector('td[data-label="最大損失 / 股"]')?.textContent;
-    // 樣本：max_loss_per_contract 81 / 560 / 259（每口，100 股）。
-    expect(maxLoss(/^AAA Bull Call Spread/)).toBe("$0.81");
-    expect(maxLoss(/^AAA Long Call/)).toBe("$5.60");
-    expect(maxLoss(/^AAA Call Butterfly/)).toBe("$2.59");
-    expect(results).not.toHaveTextContent("$560.00");
+    const headers = within(results).getAllByRole("columnheader").map((h) => h.textContent ?? "");
+    expect(headers.some((h) => h.startsWith("成本（每股／每口）"))).toBe(true);
+    expect(headers.some((h) => h.startsWith("最大損失（每股／每口）"))).toBe(true);
+    const units = (name: RegExp, label: string) =>
+      Array.from(within(results).getByRole("row", { name })
+        .querySelectorAll(`td[data-label="${label}"] .opp-unit`)).map((e) => e.textContent);
+    // 樣本：entry_cost 0.81 / 5.6 / 2.59（每股）；max_loss_per_contract 81 / 560 / 259（每口）。
+    expect(units(/^AAA Bull Call Spread/, "成本（每股／每口）")).toEqual(["$0.81 / 股", "$81.00 / 口"]);
+    expect(units(/^AAA Long Call/, "成本（每股／每口）")).toEqual(["$5.60 / 股", "$560.00 / 口"]);
+    expect(units(/^AAA Call Butterfly/, "成本（每股／每口）")).toEqual(["$2.59 / 股", "$259.00 / 口"]);
+    expect(units(/^AAA Bull Call Spread/, "最大損失（每股／每口）")).toEqual(["$0.81 / 股", "$81.00 / 口"]);
+    expect(units(/^AAA Long Call/, "最大損失（每股／每口）")).toEqual(["$5.60 / 股", "$560.00 / 口"]);
+    expect(units(/^AAA Call Butterfly/, "最大損失（每股／每口）")).toEqual(["$2.59 / 股", "$259.00 / 口"]);
+  });
+
+  it("broken-wing：最大損失照後端每口原值，不從成本推（V2-06／#408）", async () => {
+    const fly = { ...SEARCH.rows[2], entry_cost: 0.5, max_loss_per_contract: 120 };
+    await renderReady({ search: [{ status: 200, body: { ...SEARCH, rows: [fly], remaining: [] } }] });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const row = await within(await screen.findByRole("region", { name: "搜尋結果" }))
+      .findByRole("row", { name: /^AAA Call Butterfly/ });
+    const cell = (label: string) => Array.from(
+      row.querySelectorAll(`td[data-label="${label}"] .opp-unit`)).map((e) => e.textContent);
+    expect(cell("成本（每股／每口）")).toEqual(["$0.50 / 股", "$50.00 / 口"]);
+    expect(cell("最大損失（每股／每口）")).toEqual(["$1.20 / 股", "$120.00 / 口"]);
+  });
+
+  it("股票目標漲跌幅（股票層級）與股價達標時的策略報酬（策略層級）不同欄、不共用標題，各有自己的 ⓘ（V2-06／#408）", async () => {
+    await renderReady({ search: [{ status: 200, body: { ...SEARCH, remaining: [] } }] });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    const headers = within(results).getAllByRole("columnheader");
+    const upsideCol = headers.findIndex((h) => /目標漲跌幅/.test(h.textContent ?? ""));
+    const returnCol = headers.findIndex((h) => /股價達標時的策略報酬/.test(h.textContent ?? ""));
+    expect(upsideCol).toBeGreaterThanOrEqual(0);
+    expect(returnCol).toBeGreaterThanOrEqual(0);
+    expect(upsideCol).not.toBe(returnCol);
+    // 各只出現在自己的標題裡。
+    expect(headers.filter((h) => /目標漲跌幅/.test(h.textContent ?? ""))).toHaveLength(1);
+    expect(headers.filter((h) => /策略報酬/.test(h.textContent ?? ""))).toHaveLength(1);
+    // 股票層級的標題跟股價、代號放在一起；各自的 ⓘ 只在自己的標題裡。
+    const upsideHead = headers[upsideCol];
+    const returnHead = headers[returnCol];
+    expect(upsideHead).toHaveTextContent(/^標的/);
+    expect(upsideHead).toHaveTextContent("目前股價");
+    expect(within(upsideHead).getByRole("button", { name: "目標漲跌幅說明" })).toBeInTheDocument();
+    expect(within(upsideHead).getByRole("button", { name: "目前股價說明" })).toBeInTheDocument();
+    expect(within(upsideHead).queryByRole("button", { name: "股價達標時的策略報酬說明" })).toBeNull();
+    expect(within(returnHead).getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeInTheDocument();
+    expect(within(returnHead).queryByRole("button", { name: "目標漲跌幅說明" })).toBeNull();
+
+    // 每一列：目標漲跌幅在標的那一格（第 upsideCol 格），策略報酬在自己那一格。
+    const rows = within(results).getAllByRole("row", { name: /^AAA / });
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const cells = Array.from(row.children);
+      const withUpside = cells.filter((c) => /目標漲跌幅/.test(c.textContent ?? ""));
+      expect(withUpside).toEqual([cells[upsideCol]]);
+      expect(cells[upsideCol]).toHaveTextContent("目標漲跌幅 +20.0%");
+      expect(cells[upsideCol]).not.toHaveTextContent(/%.*%/);       // 只有漲跌幅一個百分比
+      expect(cells[returnCol]).toHaveAttribute("data-label", "股價達標時的策略報酬");
+      expect(cells[returnCol]).not.toHaveTextContent("目標漲跌幅");
+      expect(cells[returnCol].textContent).toMatch(/^[+-]?[\d.,]+%$/);
+    }
+
+    // 手機版表頭隱藏：區塊頂端的說明列兩者也是各自一顆 ⓘ。
+    const help = results.querySelector(".opp-help-mobile") as HTMLElement;
+    expect(within(help).getByRole("button", { name: "目標漲跌幅說明" })).toBeInTheDocument();
+    expect(within(help).getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeInTheDocument();
   });
 });
 
@@ -573,5 +635,40 @@ describe("掃描股票範圍（V2-01／#404）", () => {
     await renderReady();
     const universe = await screen.findByRole("region", { name: "掃描股票範圍" });
     expect(universe).not.toHaveTextContent("版本");
+  });
+});
+
+describe("V2-06（#408）：只改呈現，排序與名次不變", () => {
+  // 與後端 tests/test_opportunity_ranking_cases.py 同一份案例；expected 是手排的
+  // 字面順序，也是改版前畫面上的順序（改版前後都跑過這個測試）。
+  const template = Object.fromEntries(SEARCH.rows.map((r) => [r.family, r]));
+  const rows = rankingCases.rows.map((c) => ({
+    ...template[c.family],
+    ...c,
+    candidate_key: `${c.symbol}-${c.family}`,
+    consensus: { ...template[c.family].consensus },
+    scenario: { ...template[c.family].scenario, symbol: c.symbol },
+  }));
+  const sorts = ["return", "cost", "max_loss"] as const;
+
+  it.each(sorts)("rankOpportunities（%s）＝共用案例的名次", (sort) => {
+    expect(rankOpportunities(rows, sort).map((r) => `${r.symbol}/${r.family}`))
+      .toEqual(rankingCases.expected[sort]);
+  });
+
+  it("畫面上的列順序與名次＝共用案例（三種排序都比對），切換排序不重新搜尋", async () => {
+    const { spy } = await renderReady({
+      search: [{ status: 200, body: { ...SEARCH, rows, failures: [], remaining: [] } }],
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "搜尋選擇權" }));
+    const results = await screen.findByRole("region", { name: "搜尋結果" });
+    const rendered = () => Array.from(results.querySelectorAll("tbody tr[data-family]"))
+      .map((tr) => `${tr.getAttribute("aria-label")!.split(" ")[0]}/${tr.getAttribute("data-family")}`);
+    await waitFor(() => expect(rendered()).toEqual(rankingCases.expected.return));
+    for (const sort of sorts) {
+      await userEvent.selectOptions(within(results).getByRole("combobox", { name: "排序" }), sort);
+      expect(rendered()).toEqual(rankingCases.expected[sort]);
+    }
+    expect(searchBodies(spy)).toHaveLength(1);
   });
 });

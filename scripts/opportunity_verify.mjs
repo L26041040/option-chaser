@@ -6,7 +6,8 @@
 //   B. 未設定來源：MemoryStorage（＝正式站目前的狀態「尚未設定分析師資料來源」）。
 // 再用真 Chromium（手機 viewport＋桌面）走完：SU 在設定頁調門檻 → 共識清單（入選／未入選
 // 與原因、「測試資料」標示）→ 改門檻、清單跟著變且不重打上游 → 搜尋（逐檔續跑）→ 切換
-// 排序 → 存成劇本 → 詳細頁頭條數字等於那一列 → Normal 看不到入口、網址被導走、API 403
+// 排序 → 存成劇本 → 詳細頁頭條數字等於那一列（V2-06／#408：成本、最大損失每股／每口與
+// 策略報酬，手機與桌面詳細頁都逐字比對畫面上的那一列）→ Normal 看不到入口、網址被導走、API 403
 // → 未設定站顯示「尚未設定」且不能搜尋 → 手機無水平捲動。
 //
 //   npm run build
@@ -142,6 +143,26 @@ async function openOpportunityFromNav(page, desktop) {
   await nav.click();
   await page.waitForURL(/#\/opportunity$/);
   await page.getByRole("region", { name: "掃描股票範圍" }).waitFor();
+}
+
+// V2-06（#408）：結果列的欄名與每股／每口兩行（`src/OpportunityPage.tsx`）。
+const COST_LABEL = "成本（每股／每口）";
+const MAX_LOSS_LABEL = "最大損失（每股／每口）";
+const RETURN_LABEL = "股價達標時的策略報酬";
+function rowLocator(results, page, r) {
+  return results.locator(`tbody tr[data-family="${r.family}"]`)
+    .filter({ has: page.locator("td.opp-symbol", { hasText: r.symbol }) });
+}
+async function unitTexts(tr, label) {
+  return tr.locator(`td[data-label="${label}"] .opp-unit`).allInnerTexts();
+}
+/** 一列畫面上顯示的成本、最大損失（每股／每口）與策略報酬——存成劇本後拿詳細頁逐字比。 */
+async function shownValues(tr) {
+  return {
+    cost: await unitTexts(tr, COST_LABEL),
+    loss: await unitTexts(tr, MAX_LOSS_LABEL),
+    ret: (await tr.locator(`td[data-label="${RETURN_LABEL}"]`).innerText()).trim(),
+  };
 }
 
 async function saveThresholds(page, { percentile, dispersion, symbols }) {
@@ -296,7 +317,8 @@ async function suPhoneFlow(browser) {
 
   const results = page.getByRole("region", { name: "搜尋結果" });
   const order = () => results.locator("tbody tr").evaluateAll(
-    (trs) => trs.map((tr) => `${tr.querySelector("td")?.textContent}|${tr.getAttribute("data-family")}`));
+    // 代號取列的 aria-label（「AAA Long Call」）：標的格還有股價／目標漲跌幅（#407）。
+    (trs) => trs.map((tr) => `${tr.getAttribute("aria-label")?.split(" ")[0]}|${tr.getAttribute("data-family")}`));
   const keyOf = (r) => `${r.symbol}|${r.family}`;
   const sortedBy = (f, dir) => [...rows].sort((a, b) =>
     dir * (f(a) - f(b)) || a.symbol.localeCompare(b.symbol) || a.family.localeCompare(b.family)).map(keyOf);
@@ -311,14 +333,29 @@ async function suPhoneFlow(browser) {
         JSON.stringify(await order()) === JSON.stringify(sortedBy((r) => r.max_loss_per_contract, 1)));
   check("切換排序沒有重新搜尋", requests.length === searchCalls);
   let cellsOk = true;
+  let levelsOk = true;
+  const bad = [];
   for (const r of rows) {
-    const tr = results.locator(`tbody tr[data-family="${r.family}"]`)
-      .filter({ has: page.locator("td.opp-symbol", { hasText: r.symbol }) });
-    const cost = await tr.locator('td[data-label="成本 / 股"]').innerText();
-    const loss = await tr.locator('td[data-label="最大損失 / 股"]').innerText();
-    cellsOk &&= cost === money(r.entry_cost) && loss === money(r.max_loss_per_contract / 100);
+    const tr = rowLocator(results, page, r);
+    const cost = await unitTexts(tr, COST_LABEL);
+    const loss = await unitTexts(tr, MAX_LOSS_LABEL);
+    const want = {
+      cost: [`${money(r.entry_cost)} / 股`, `${money(r.entry_cost * 100)} / 口`],
+      loss: [`${money(r.max_loss_per_contract / 100)} / 股`, `${money(r.max_loss_per_contract)} / 口`],
+    };
+    const ok = JSON.stringify(cost) === JSON.stringify(want.cost)
+      && JSON.stringify(loss) === JSON.stringify(want.loss);
+    if (!ok) bad.push({ key: `${r.symbol}|${r.family}`, cost, loss, want });
+    cellsOk &&= ok;
+    // 股票目標漲跌幅只在標的格（股票層級），策略報酬自己一格（策略層級）。
+    const stockCell = await tr.locator('td[data-label="標的"]').innerText();
+    const retCell = await tr.locator(`td[data-label="${RETURN_LABEL}"]`).innerText();
+    levelsOk &&= /目標漲跌幅/.test(stockCell) && !/目標漲跌幅/.test(retCell)
+      && retCell === pct(r.target_return);
   }
-  check("每列：成本 / 股＝entry_cost、最大損失 / 股＝max_loss_per_contract ÷ 100", cellsOk);
+  check("每列（手機卡片）：成本每股＝entry_cost、每口＝× 100；最大損失每口＝max_loss_per_contract、每股＝÷ 100",
+        cellsOk, bad.length ? bad.slice(0, 2) : undefined);
+  check("每列（手機卡片）：股票目標漲跌幅在標的格、股價達標時的策略報酬自己一格，不混在一起", levelsOk);
   check("手機：搜尋結果頁無水平捲動", await noHorizontalScroll(page));
 
   // 6) 存成劇本：報酬最高的一列（它也是該劇本跨家族的冠軍＝詳細頁頭條）。
@@ -326,6 +363,7 @@ async function suPhoneFlow(browser) {
   const top = [...rows].sort((a, b) => b.target_return - a.target_return)[0];
   const topRow = results.locator(`tbody tr[data-family="${top.family}"]`)
     .filter({ has: page.locator("td.opp-symbol", { hasText: top.symbol }) });
+  const shown = await shownValues(topRow);
   const scenariosBefore = Number(sql("SELECT count(*) FROM scenarios"));
   await topRow.getByRole("button", { name: "存成劇本" }).click();
   await page.waitForURL(/#\/s\/[^/]+$/, { timeout: 30000 });
@@ -335,18 +373,24 @@ async function suPhoneFlow(browser) {
   const hero = page.getByRole("region", { name: "劇本頭條" });
   await hero.waitFor({ timeout: 30000 });
   const heroText = await hero.innerText();
-  check("手機詳細頁頭條：同一檔、目標價情境報酬與該列相同",
-        heroText.includes(top.symbol) && heroText.includes(pct(top.target_return)),
-        { want: [top.symbol, pct(top.target_return)] });
+  check("手機詳細頁頭條：同一檔、股價達標時的策略報酬與該列畫面上的數字相同",
+        heroText.includes(top.symbol) && heroText.includes(shown.ret)
+        && shown.ret === pct(top.target_return),
+        { want: [top.symbol, shown.ret] });
   check("手機詳細頁頭條：目標價＝共識平均、目標月份相同",
         heroText.includes(`目標 ${money(top.scenario.target_price)} · ${top.target_month}`));
   const entry = page.locator("section.card", { hasText: "進場 · 以最差成交價計算" });
   const rowValue = async (label) => entry.locator(":scope > .row", {
     has: page.locator(".row-label", { hasText: new RegExp(`^${label}$`) }) })
     .first().locator(".row-value").innerText();
-  check("手機詳細頁：淨成本 / 股＝該列", (await rowValue("淨成本 / 股")) === money(top.entry_cost));
-  check("手機詳細頁：Max Loss＝該列的最大損失 / 股",
-        (await rowValue("Max Loss")) === money(top.max_loss_per_contract / 100));
+  const mobileDetail = {
+    cost: [`${await rowValue("淨成本 / 股")} / 股`, `${await rowValue("淨成本 / 口")} / 口`],
+    loss: [`${await rowValue("Max Loss / 股")} / 股`, `${await rowValue("Max Loss / 口")} / 口`],
+  };
+  check("手機詳細頁：淨成本 / 股、淨成本 / 口＝該列畫面上的成本（每股／每口）",
+        JSON.stringify(mobileDetail.cost) === JSON.stringify(shown.cost), { detail: mobileDetail.cost, row: shown.cost });
+  check("手機詳細頁：Max Loss / 股、Max Loss / 口＝該列畫面上的最大損失（每股／每口）",
+        JSON.stringify(mobileDetail.loss) === JSON.stringify(shown.loss), { detail: mobileDetail.loss, row: shown.loss });
   check("手機詳細頁：Breakeven＝該列",
         top.breakeven === null || (await rowValue("Breakeven")).includes(money(top.breakeven)));
   const legLabels = (await entry.locator(":scope > .row .row-label").allInnerTexts())
@@ -366,7 +410,7 @@ async function suPhoneFlow(browser) {
         { champion: champion && { key: champion.candidate_key, ret: champion.baseline_return } });
   check("手機：詳細頁無水平捲動", await noHorizontalScroll(page));
   await ctx.close();
-  return { top, id, rowCount: rows.length };
+  return { top, id, rowCount: rows.length, shown };
 }
 
 async function suDesktopFlow(browser, saved) {
@@ -382,14 +426,38 @@ async function suDesktopFlow(browser, saved) {
   const results = page.getByRole("region", { name: "搜尋結果" });
   check("桌面：搜尋結果列數與手機相同", (await results.locator("tbody tr").count()) === saved.rowCount);
   check("桌面：搜尋結果頁無水平捲動", await noHorizontalScroll(page));
-  const { top, id } = saved;
+  const { top, id, shown } = saved;
+  const desktopShown = await shownValues(rowLocator(results, page, top));
+  check("桌面結果列與手機卡片顯示同一組成本、最大損失（每股／每口）與策略報酬",
+        JSON.stringify(desktopShown) === JSON.stringify(shown), { desktopShown, shown });
+  const heads = await results.locator("thead th").allInnerTexts();
+  const upsideCol = heads.findIndex((h) => /目標漲跌幅/.test(h));
+  const returnCol = heads.findIndex((h) => /股價達標時的策略報酬/.test(h));
+  check("桌面表頭：目標漲跌幅（標的欄）與股價達標時的策略報酬是不同欄、不同標題，各有自己的 ⓘ",
+        upsideCol >= 0 && returnCol >= 0 && upsideCol !== returnCol
+        && heads.filter((h) => /目標漲跌幅|策略報酬/.test(h)).length === 2
+        && await results.locator("thead th").nth(upsideCol)
+          .getByRole("button", { name: "目標漲跌幅說明" }).isVisible()
+        && await results.locator("thead th").nth(returnCol)
+          .getByRole("button", { name: "股價達標時的策略報酬說明" }).isVisible(),
+        { heads });
   await page.goto(`${BASE}/#/s/${encodeURIComponent(id)}`);
   const body = page.locator("body");
   await page.getByText("淨成本 / 股").first().waitFor({ timeout: 30000 });
   const text = await body.innerText();
-  check("桌面詳細頁：顯示該列的報酬、淨成本 / 股、最大損失（每股值）",
-        text.includes(pct(top.target_return)) && text.includes(money(top.entry_cost))
-        && text.includes(money(top.max_loss_per_contract / 100)));
+  const entry = page.locator(".detail-col-right");
+  const deskValue = async (label) => entry.locator(".row", {
+    has: page.locator(".row-label", { hasText: new RegExp(`^${label}$`) }) })
+    .first().locator(".row-value").innerText();
+  const desktopDetail = {
+    cost: [`${await deskValue("淨成本 / 股")} / 股`, `${await deskValue("淨成本 / 口")} / 口`],
+    loss: [`${await deskValue("資本／最大損失 / 股")} / 股`, `${await deskValue("資本／最大損失 / 口")} / 口`],
+  };
+  check("桌面詳細頁：股價達標時的策略報酬＝該列畫面上的數字", text.includes(shown.ret));
+  check("桌面詳細頁（進場）：淨成本、資本／最大損失每股／每口＝該列畫面上的數字",
+        JSON.stringify(desktopDetail) === JSON.stringify({ cost: shown.cost, loss: shown.loss }),
+        { desktopDetail, shown });
+  check("桌面詳細頁：不再出現標「（每口）」卻顯示每股值的舊標籤", !text.includes("資本／最大損失（每口）"));
   check("桌面：詳細頁無水平捲動", await noHorizontalScroll(page));
   await ctx.close();
 }

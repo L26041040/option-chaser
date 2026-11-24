@@ -22,11 +22,16 @@
  *   這頁照實說「尚有 N 檔未搜尋」，使用者按鈕才對那些檔發起新的一輪
  *   （同樣受上限約束）——不自動續跑，否則上限形同虛設。
  * - 排序選項的文字由後端給（搜尋回應的 `sort_options`，與設定頁同一份）。
- * - 每個數字都是後端原值，這裡只排序與格式化。單位照實標，而且跟既有
- *   詳細頁同一口徑（#395）：投入成本是每股（`entry_cost`）；最大損失也顯示
- *   每股＝`max_loss_per_contract / 100`（後端欄位是每口、100 股；既有詳細頁
- *   的 Max Loss 也是這樣 ÷100 顯示），存成劇本後詳細頁與這一列是同一個數字。
- *   排序仍用後端的每口原值（÷100 是單調的，順序不變）。
+ * - 每個數字都是後端原值，這裡只排序與格式化。V2-06（#408）：成本與最大損失
+ *   都同時顯示**每股與每口**（1 口 = 100 股；換算只在 `contractUnits.ts`）——
+ *   成本每股＝`entry_cost`、每口＝× 100；最大損失每口＝`max_loss_per_contract`
+ *   原值、每股＝÷ 100，不重新計算。劇本詳細頁用同一個 helper 顯示同兩種單位，
+ *   存成劇本後兩邊是同一組數字。排序仍用後端原值（只改呈現，名次不變，
+ *   `contracts/opportunity_ranking_cases.json` 前後端一起鎖住）。
+ * - V2-06（#408）：兩種「漲幅／報酬」分開放——**股票目標漲跌幅**是股票層級，
+ *   跟代號、目前股價與報價日期放在「標的」那一格（不參與排序）；**股價達標時
+ *   的策略報酬**是策略層級、自己一欄。兩者各有標題與 ⓘ（桌面在表頭；手機版
+ *   表頭隱藏，改在區塊頂端的說明列），不共用欄位或標題。
  * - 文案只說「股價達標時的策略報酬」，並固定一句它不是期望值或勝率。
  * - 用語照 #405（V2-03）的定稿對照表；「分歧度歷史排序」以 PR 顯示
  *   （`dispersionRank.ts`，向下取整），篩選仍只看後端的 `gate`。
@@ -81,6 +86,7 @@ import {
 import { prLabel, prThresholdLabel } from "./dispersionRank";
 import { detailHash, opportunitySettingsHash } from "./route";
 import { formatReturn, money } from "./scenarios";
+import { costAndMaxLoss, perContractText, perShareText } from "./contractUnits";
 import { roleAtLeast, type Role } from "./superuser";
 import { priceDateLabel, priceText, upsideText } from "./targetUpside";
 
@@ -534,18 +540,31 @@ function ConfiguredBody({
             </label>
           </div>
           <p className="caption opp-disclaimer">{RETURN_DISCLAIMER}</p>
-          <MetricHelpRow metrics={RESULT_HELP} />
+          {/* 手機版表頭隱藏：說明改放在這一列（桌面隱藏，表頭各欄自己有 ⓘ）。 */}
+          <MetricHelpRow metrics={RESULT_HELP} className="opp-help-mobile" />
           <table className="tbl opp-table">
             <thead>
               <tr>
-                <th scope="col">標的</th>
+                <th scope="col" className="opp-th-stock">
+                  <span className="opp-th-main">標的</span>
+                  <span className="opp-th-sub">
+                    <span className="metric-help-item">目前股價<MetricInfo metric="currentPrice" /></span>
+                    <span className="metric-help-item">目標漲跌幅<MetricInfo metric="targetUpside" /></span>
+                  </span>
+                </th>
                 <th scope="col">策略</th>
                 <th scope="col">履約價</th>
                 <th scope="col">到期日</th>
                 <th scope="col">目標月份</th>
-                <th scope="col" className="r">成本 / 股</th>
-                <th scope="col" className="r">最大損失 / 股</th>
-                <th scope="col" className="r">股價達標時的策略報酬</th>
+                <th scope="col" className="r">
+                  {COST_LABEL}
+                  <MetricInfo metric="costAndMaxLoss" />
+                </th>
+                <th scope="col" className="r">{MAX_LOSS_LABEL}</th>
+                <th scope="col" className="r">
+                  {RETURN_LABEL}
+                  <MetricInfo metric="scenarioReturn" />
+                </th>
                 <th scope="col" className="r">損益兩平</th>
                 <th scope="col"><span className="sr-only">動作</span></th>
               </tr>
@@ -593,6 +612,9 @@ function ConfiguredBody({
 }
 
 const RESULT_COLUMNS = 10;
+const COST_LABEL = "成本（每股／每口）";
+const MAX_LOSS_LABEL = "最大損失（每股／每口）";
+const RETURN_LABEL = "股價達標時的策略報酬";
 
 /** V2-04（#406）：清單／結果表每列都重複的數字，說明只在區塊頂端放一次。 */
 const CONSENSUS_HELP = [
@@ -616,6 +638,7 @@ function ResultRow({
   onSave: () => void;
 }) {
   const detail = useConsensusDetail(row.symbol);
+  const units = costAndMaxLoss(row);
   return (
     <>
       <tr aria-label={`${row.symbol} ${strategyLabel(row.subtype)}`} data-family={row.family}>
@@ -632,11 +655,15 @@ function ResultRow({
           <span className="row-note">{expiryDistance(row.buffer_days)}</span>
         </td>
         <td data-label="目標月份">{row.target_month}</td>
-        <td data-label="成本 / 股" className="r num">{money(row.entry_cost)}</td>
-        <td data-label="最大損失 / 股" className="r num">
-          {money(row.max_loss_per_contract / 100)}
+        <td data-label={COST_LABEL} className="r num">
+          <span className="opp-unit">{perShareText(units.cost.perShare)}</span>
+          <span className="opp-unit">{perContractText(units.cost.perContract)}</span>
         </td>
-        <td data-label="股價達標時的策略報酬" className="r num opp-return">
+        <td data-label={MAX_LOSS_LABEL} className="r num">
+          <span className="opp-unit">{perShareText(units.maxLoss.perShare)}</span>
+          <span className="opp-unit">{perContractText(units.maxLoss.perContract)}</span>
+        </td>
+        <td data-label={RETURN_LABEL} className="r num opp-return">
           {formatReturn(row.target_return)}
         </td>
         <td data-label="損益兩平" className="r num">
@@ -682,7 +709,8 @@ function ResultRow({
 }
 
 /** 結果列「標的」格裡的目前股價／報價日期／目標漲跌幅（V2-05／#407）：
- *  共識更新時存下的報價，不是這次選擇權搜尋的 spot。分三行放，不加寬表格。 */
+ *  共識更新時存下的報價，不是這次選擇權搜尋的 spot。分三行放，不加寬表格。
+ *  這是股票層級的數字（V2-06／#408），跟策略報酬分開，不進排序。 */
 function RowQuote({ q }: { q: OpportunityRow["consensus"] }) {
   const hasPrice = q.price !== null && q.price !== undefined;
   return (
