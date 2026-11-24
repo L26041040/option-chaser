@@ -295,6 +295,14 @@ describe("DesktopDetailBody：右欄候選面板（OG-07／#325）", () => {
       "aria-selected", "true");
     const costRow = rightPanel.getByText("淨成本 / 股").closest(".row") as HTMLElement;
     expect(within(costRow).getByText("$1.00")).toBeInTheDocument();
+    // V2-06（#408）：每股與每口都有（1 口 = 100 股），跟機會搜尋結果列同一組數字；
+    // 原本標「（每口）」卻顯示 ÷100 的每股值，改成照實標單位。
+    const value = (label: string) => (rightPanel.getByText(label, { exact: true })
+      .closest(".row") as HTMLElement).querySelector(".row-value")!.textContent;
+    expect(value("淨成本 / 口")).toBe(`$${(cand.natural_cost * 100).toFixed(2)}`);
+    expect(value("資本／最大損失 / 股")).toBe(`$${(cand.max_loss_per_contract / 100).toFixed(2)}`);
+    expect(value("資本／最大損失 / 口")).toBe(`$${cand.max_loss_per_contract.toFixed(2)}`);
+    expect(rightPanel.queryByText(/（每口）/)).toBeNull();
   });
 
   it("「報告」tab 精簡摘要仍顯示免責聲明（`/code-review` Spec 軸跟進：" +

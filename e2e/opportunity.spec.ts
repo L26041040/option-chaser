@@ -134,10 +134,37 @@ test("SU：導覽進頁 → 符合條件的股票 → 搜尋（續跑）→ 切�
     .toContainText("目前股價 $100.00");
   await expect(longCall.locator('td[data-label="標的"]')).toContainText("2026-09-25 收盤");
   await expect(longCall.locator('td[data-label="標的"]')).toContainText("目標漲跌幅 +20.0%");
-  await expect(longCall).toContainText("$5.60");
-  // 最大損失與既有詳細頁同口徑：每股（後端每口 560 ÷ 100），不是 $560.00（#395）。
-  await expect(longCall.locator('td[data-label="最大損失 / 股"]')).toHaveText("$5.60");
-  await expect(longCall).not.toContainText("$560.00");
+  // V2-06（#408）：成本與最大損失每股、每口都顯示（手機卡片也不少）；
+  // 成本每口＝entry_cost × 100，最大損失每口＝後端每口原值 560。
+  const units = (label: string) =>
+    longCall.locator(`td[data-label="${label}"] .opp-unit`).allInnerTexts();
+  expect(await units("成本（每股／每口）")).toEqual(["$5.60 / 股", "$560.00 / 口"]);
+  expect(await units("最大損失（每股／每口）")).toEqual(["$5.60 / 股", "$560.00 / 口"]);
+  for (const label of ["成本（每股／每口）", "最大損失（每股／每口）"]) {
+    for (const unit of await longCall.locator(`td[data-label="${label}"] .opp-unit`).all()) {
+      await expect(unit).toBeVisible();
+    }
+  }
+  // 股票目標漲跌幅（標的格）與策略報酬（自己一格）分開，各自的 ⓘ 看得到。
+  await expect(longCall.locator('td[data-label="股價達標時的策略報酬"]')).toHaveText("150.0%");
+  await expect(longCall.locator('td[data-label="股價達標時的策略報酬"]'))
+    .not.toContainText("目標漲跌幅");
+  await expect(results.getByRole("button", { name: "目標漲跌幅說明" })).toBeVisible();
+  await expect(results.getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeVisible();
+  if (isDesktop()) {
+    await expect(results.getByRole("columnheader", { name: /^標的/ })
+      .getByRole("button", { name: "目標漲跌幅說明" })).toBeVisible();
+    await expect(results.getByRole("columnheader", { name: /^股價達標時的策略報酬/ })
+      .getByRole("button", { name: "股價達標時的策略報酬說明" })).toBeVisible();
+  } else {
+    // 手機卡片：股票層級整寬放在最上面，策略數字在它下面。
+    const stock = await longCall.locator('td[data-label="標的"]').boundingBox();
+    const ret = await longCall.locator('td[data-label="股價達標時的策略報酬"]').boundingBox();
+    expect(stock!.y + stock!.height).toBeLessThanOrEqual(ret!.y);
+    const card = await longCall.boundingBox();
+    expect(stock!.width).toBeGreaterThan(card!.width * 0.9);
+  }
+  await noHorizontalScroll(page);
   await longCall.getByRole("button", { name: "存成劇本" }).click();
 
   await expect(page).toHaveURL(/#\/s\/opp-new$/);

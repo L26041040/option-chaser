@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import roundingCases from "../contracts/target_upside_rounding_cases.json";
 import {
   formatUpside,
   priceDateLabel,
   priceText,
+  targetUpsidePct,
   upsideText,
   UPSIDE_REASON_LABELS,
 } from "./targetUpside";
@@ -16,6 +18,26 @@ const close = {
   target_upside_pct: 12.3,
   target_upside_reason: null,
 };
+
+describe("目標漲跌幅只有一套公式與小數位規則（V2-06／#408）", () => {
+  // 與後端 tests/test_price_quote.py 讀同一份案例：(平均目標價 ÷ 目前股價 − 1)
+  // × 100，四捨五入到小數一位、整好一半遠離零、沒有 -0.0。
+  it.each(roundingCases.cases)("$note：$mean ÷ $price → $label", (c) => {
+    const pct = targetUpsidePct(Number(c.mean), Number(c.price));
+    expect(pct).toBe(Number(c.expected));
+    expect(Object.is(pct, -0)).toBe(false);
+    expect(formatUpside(pct!)).toBe(c.label);
+    // 畫面顯示的是後端的值（已經是一位小數）：再格式化一次不會變。
+    expect(formatUpside(Number(c.expected))).toBe(c.label);
+  });
+
+  it("缺值或股價 ≤ 0 時不算", () => {
+    expect(targetUpsidePct(null, 100)).toBeNull();
+    expect(targetUpsidePct(120, null)).toBeNull();
+    expect(targetUpsidePct(120, 0)).toBeNull();
+    expect(targetUpsidePct(120, -5)).toBeNull();
+  });
+});
 
 describe("formatUpside（後端已四捨五入到小數一位）", () => {
   it("正值帶 +、負值帶 -、零不帶正負號", () => {

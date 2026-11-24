@@ -266,6 +266,23 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
     expect(entryPanel.getByText("淨成本 / 股")).toBeInTheDocument();
   });
 
+  it("V2-06（#408）：成本與最大損失都有每股與每口，跟機會搜尋結果列同一組數字", async () => {
+    mockDetail(detail());
+    render(<ScenarioDetail id="s1" />);
+    await screen.findByText(/劇本主圖/);
+
+    const entryPanel = within(
+      screen.getByRole("heading", { name: "進場 · 以最差成交價計算" }).closest("section")!);
+    const champion = baselineTopCandidate(view)!;
+    const value = (label: string) =>
+      entryPanel.getByText(label, { exact: true }).closest(".row")!.querySelector(".row-value")!
+        .textContent;
+    expect(value("淨成本 / 股")).toBe(`$${champion.natural_cost.toFixed(2)}`);
+    expect(value("淨成本 / 口")).toBe(`$${(champion.natural_cost * 100).toFixed(2)}`);
+    expect(value("Max Loss / 股")).toBe(`$${(champion.max_loss_per_contract / 100).toFixed(2)}`);
+    expect(value("Max Loss / 口")).toBe(`$${champion.max_loss_per_contract.toFixed(2)}`);
+  });
+
   it("進場面板重用既有 `RiskPayoff`／`PositionSensitivity`——Max Loss／" +
      "Net Delta 這兩項既有內容都在，不是只有逐腿價格", async () => {
     mockDetail(detail());
@@ -274,7 +291,7 @@ describe("OG-10（#327）：手機版三價位階梯／進場面板（artifact�
 
     const entryPanel = within(
       screen.getByRole("heading", { name: "進場 · 以最差成交價計算" }).closest("section")!);
-    expect(entryPanel.getByText("Max Loss")).toBeInTheDocument();
+    expect(entryPanel.getByText("Max Loss / 股")).toBeInTheDocument();
     expect(entryPanel.getByText("Net Delta")).toBeInTheDocument();
   });
 

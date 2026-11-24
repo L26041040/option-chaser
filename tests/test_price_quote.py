@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -22,17 +24,15 @@ MON = date(2026, 11, 23)
 
 # ---------- 公式與小數位 ----------
 
+# V2-06（#408）：案例與前端 `src/targetUpside.test.ts` 共用同一份
+# （`contracts/target_upside_rounding_cases.json`），公式與小數位規則只有一套。
+_ROUNDING_CASES = json.loads(
+    Path("contracts/target_upside_rounding_cases.json").read_text(encoding="utf-8"))["cases"]
+
+
 @pytest.mark.parametrize("mean, price, expected", [
-    ("120", "100", Decimal("20.0")),          # 正值
-    ("90", "100", Decimal("-10.0")),          # 負值
-    ("100", "100", Decimal("0.0")),           # 零
-    ("100", "300", Decimal("-66.7")),         # -66.666… → 四捨五入到 0.1
-    ("200", "300", Decimal("-33.3")),         # -33.333…
-    ("100.05", "100", Decimal("0.1")),        # +0.05 整好一半 → 遠離零
-    ("99.95", "100", Decimal("-0.1")),        # -0.05 整好一半 → 遠離零
-    ("100.04", "100", Decimal("0.0")),        # +0.04 → 0.0
-    ("99.96", "100", Decimal("0.0")),         # -0.04 → 0.0（不是 -0.0）
-])
+    (c["mean"], c["price"], Decimal(c["expected"])) for c in _ROUNDING_CASES
+], ids=[c["note"] for c in _ROUNDING_CASES])
 def test_target_upside_pct_formula_and_rounding(mean, price, expected):
     got = target_upside_pct(Decimal(mean), Decimal(price))
     assert got == expected

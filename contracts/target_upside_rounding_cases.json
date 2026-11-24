@@ -1,0 +1,14 @@
+{
+  "_comment": "V2-06（#408）：目標漲跌幅公式與小數位規則的唯一一份案例。後端 tests/test_price_quote.py 與前端 src/targetUpside.test.ts 讀同一份：(mean ÷ price − 1) × 100，四捨五入到小數一位、整好一半遠離零、沒有 -0.0。expected 是手算的字面值；label 是畫面文字。",
+  "cases": [
+    { "mean": "120", "price": "100", "expected": "20.0", "label": "+20.0%", "note": "正值" },
+    { "mean": "90", "price": "100", "expected": "-10.0", "label": "-10.0%", "note": "負值" },
+    { "mean": "100", "price": "100", "expected": "0.0", "label": "0.0%", "note": "零" },
+    { "mean": "100", "price": "300", "expected": "-66.7", "label": "-66.7%", "note": "-66.666… → 0.1" },
+    { "mean": "200", "price": "300", "expected": "-33.3", "label": "-33.3%", "note": "-33.333…" },
+    { "mean": "100.05", "price": "100", "expected": "0.1", "label": "+0.1%", "note": "+0.05 整好一半 → 遠離零" },
+    { "mean": "99.95", "price": "100", "expected": "-0.1", "label": "-0.1%", "note": "-0.05 整好一半 → 遠離零" },
+    { "mean": "100.04", "price": "100", "expected": "0.0", "label": "0.0%", "note": "+0.04 → 0.0" },
+    { "mean": "99.96", "price": "100", "expected": "0.0", "label": "0.0%", "note": "-0.04 → 0.0（不是 -0.0）" }
+  ]
+}

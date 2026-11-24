@@ -4,7 +4,8 @@
  * 每則固定三段：定義、方向（越高越好還是越低越好）、計算口徑。名稱照 #405
  * 定稿（`metricHelp.test.ts` 鎖住名稱、禁用字眼，並用真實 helper 抽查範例
  * 數字：PR 用 `dispersionRank.ts`、分歧率用 `ratioPct()`、金額用 `money()`、
- * 目標漲跌幅用本檔的 `targetUpsidePct()`）。
+ * 目標漲跌幅用 `targetUpside.ts` 的 `targetUpsidePct()`／`formatUpside()`——
+ * 前端唯一一套公式與小數位規則，與後端讀同一份案例，V2-06／#408）。
  *
  * 口徑對照後端（只是說明，不是演算法；改後端規則時要一起改這裡）：
  * - `option_chaser/consensus.py` `ConsensusRules`：`n_min=5`、`validity_months=12`、
@@ -13,11 +14,9 @@
  *   （`dispersion_percentile`）。
  * - `api_app/consensus_cache.py` `RefreshPolicy` 預設：重試 3 次、冷卻 15 分、
  *   429 沒給 Retry-After 時暫停 30 分、每日上游呼叫上限（一次＝一檔）。
- * - 結果表：`entry_cost` 每股、`max_loss_per_contract` 每口（100 股）。
- *
- * 「目前股價」「目標漲跌幅」的欄位由 #407 加上；它們的說明與公式先放在這裡，
- * #407 直接用 `<MetricInfo metric="currentPrice" />`／`"targetUpside"` 與
- * `targetUpsidePct()`。
+ * - 結果表：`entry_cost` 每股、`max_loss_per_contract` 每口（100 股）；
+ *   單位換算只在 `contractUnits.ts`。
+ * - 目標漲跌幅：`api_app/price_quote.py::target_upside_pct`（小數一位、一半遠離零）。
  */
 
 export interface MetricHelpEntry {
@@ -75,7 +74,7 @@ export const METRIC_HELP = {
     direction:
       "正值代表平均目標價高於目前股價，數字越大，分析師認為的上漲空間越大；負值代表平均目標價低於目前股價。",
     basis:
-      "(平均目標價 ÷ 目前股價 − 1) × 100%，股價用畫面標示的股價日期那天的價格。例：平均目標價 $120.00、目前股價 $100.00 → +20.0%。",
+      "(平均目標價 ÷ 目前股價 − 1) × 100%，結果四捨五入到小數第一位（整好一半時遠離零）；股價用畫面標示的股價日期那天的價格。例：平均目標價 $120.00、目前股價 $100.00 → +20.0%。",
   },
   scenarioReturn: {
     name: "股價達標時的策略報酬",
@@ -135,19 +134,4 @@ export type MetricHelpKey = keyof typeof METRIC_HELP;
 /** ⓘ 圖示的 aria-label：「分析師分歧率說明」。 */
 export function metricHelpLabel(key: MetricHelpKey): string {
   return `${METRIC_HELP[key].name}說明`;
-}
-
-/** 目標漲跌幅（%）＝(平均目標價 ÷ 目前股價 − 1) × 100；缺值或股價 ≤ 0 時 null。 */
-export function targetUpsidePct(
-  meanTarget: number | null | undefined,
-  price: number | null | undefined,
-): number | null {
-  if (meanTarget == null || price == null || !(price > 0)) return null;
-  return (meanTarget / price - 1) * 100;
-}
-
-/** 「+20.0%」「-25.0%」；沒有值時「—」。 */
-export function targetUpsideLabel(pct: number | null): string {
-  if (pct === null) return "—";
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }

@@ -38,6 +38,7 @@
  */
 import type { AnalysisView, Candidate, Leg, StrategyResult } from "./api";
 import { formatReturn, money } from "./scenarios";
+import { perShare } from "./contractUnits";
 
 export function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -223,10 +224,12 @@ export function RiskPayoff({ candidate }: { candidate: Candidate }) {
         （T15／#230）broken-wing 組合的最大損失可能超過已付權利金
         本身——`max_loss_per_contract` 是唯一對兩種情況都誠實的欄位，
         `natural_cost` 只是進場成本、不是這組候選真正的最大損失。
-        `/100` 是既有的「每股→每口（100 股）」既有換算慣例，見
-        `store.py` 的 `capital_per_contract` 同一套口徑。
+        `max_loss_per_contract` 是每口（100 股）；V2-06（#408）起每股
+        （÷100）與每口（原值）兩種單位都顯示、照實標單位，換算只在
+        `contractUnits.ts`——跟機會搜尋結果列同一組數字。
       */}
-      <Row label="Max Loss">{money(candidate.max_loss_per_contract / 100)}</Row>
+      <Row label="Max Loss / 股">{money(perShare(candidate.max_loss_per_contract))}</Row>
+      <Row label="Max Loss / 口">{money(candidate.max_loss_per_contract)}</Row>
     </>
   );
 }
