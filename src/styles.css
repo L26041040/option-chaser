@@ -4273,17 +4273,15 @@ body {
    條，AC 原本設想但最終沒有任何畫面採用這個呈現方式）——同一批
    SW-01 落地時新增、SW-02～SW-08 全程沒有真實消費端的 primitives。 */
 
-/* Info tooltip affordance：一顆可 focus 的圖示按鈕＋`aria-describedby`
-   指向的浮動說明卡，鍵盤 focus／hover 皆可觸發（`:focus-within` 涵蓋
-   鍵盤 focus 該按鈕的情境；`role="tooltip"` 的內容本身不接收
-   focus）。消費端用法：
-   `<button className="pinfo-btn" aria-describedby="foo">…</button>
-   <div id="foo" role="tooltip" className="pinfo-panel">…</div>`，兩者
-   包在 `.pinfo` 容器內，用 CSS 相鄰選擇器控制顯示，不需要額外的 JS
-   開關狀態。 */
+/* Info tooltip affordance（SW-01／#331；V2-04／#406 改 JS 開合）：一顆可
+   focus 的圖示按鈕（`.pinfo-btn`）＋展開時才渲染的說明卡（`.pinfo-panel`，
+   portal 到 `document.body`、`position: fixed`，由 `InfoTooltip.tsx` 依圖示
+   位置擺放並夾在視窗內）。說明卡不在任何捲動容器裡，不會被裁切，也不會
+   撐出橫向捲動。 */
 .pinfo {
   position: relative;
   display: inline-flex;
+  vertical-align: middle;
 }
 
 .pinfo-btn {
@@ -4298,32 +4296,60 @@ body {
   justify-content: center;
   cursor: pointer;
   padding: 0;
+  flex: none;
+}
+
+.pinfo-btn:hover,
+.pinfo-btn[aria-expanded="true"] {
+  color: var(--acc-text);
+}
+
+.pinfo-btn:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
 }
 
 .pinfo-panel {
-  position: absolute;
-  z-index: 20;
-  top: calc(100% + 8px);
+  position: fixed;
+  z-index: 1000;
+  top: 0;
   left: 0;
-  width: 280px;
+  width: min(300px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
   background: var(--ink);
   color: var(--paper);
   border-radius: 10px;
   padding: 12px 14px;
   font-size: 12px;
+  font-weight: 400;
   line-height: 1.6;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
   box-shadow: var(--shadow);
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s ease;
 }
 
-.pinfo:hover .pinfo-panel,
-.pinfo:focus-within .pinfo-panel {
-  visibility: visible;
-  opacity: 1;
-  pointer-events: auto;
+/* 指標說明（V2-04／#406，`MetricInfo.tsx`）：名稱＋定義／方向／計算口徑三段。 */
+.pinfo-title {
+  display: block;
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.pinfo-sec {
+  display: block;
+}
+
+.pinfo-sec + .pinfo-sec {
+  margin-top: 4px;
+}
+
+.pinfo-sec b {
+  font-weight: 700;
+  margin-right: 6px;
 }
 
 /* ---------- SW-06（#335，Seed Warm）：手機劇本詳細頁 ---------- */
@@ -4623,6 +4649,30 @@ body {
 
 .opp-detail-label {
   color: var(--ink-2);
+}
+
+/* V2-04（#406）：標籤＋ⓘ 同一行（共識詳細、資料狀態、設定頁門檻）。 */
+.opp-detail-label-row,
+.settings-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 「指標說明：名稱ⓘ 名稱ⓘ …」：清單與結果表每列重複的數字，說明只放一次。 */
+.metric-help-row {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+}
+
+.metric-help-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
 
 .opp-detail-title {

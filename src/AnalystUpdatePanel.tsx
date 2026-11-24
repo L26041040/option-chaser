@@ -19,6 +19,9 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import MetricInfo, { MetricHelpRow } from "./MetricInfo";
+import type { MetricHelpKey } from "./metricHelp";
+
 import {
   getConsensusRefreshStatus,
   updateConsensus,
@@ -188,12 +191,12 @@ export default function AnalystUpdatePanel({
         <StatusFact label="資料來源">
           {consensus.source.is_fixture ? "測試資料（非真實市場資料）" : "真實分析師資料"}
         </StatusFact>
-        <StatusFact label="資料日期">{consensus.universe.as_of ?? data?.data_as_of ?? "—"}</StatusFact>
+        <StatusFact label="資料日期" help="dataDate">{consensus.universe.as_of ?? data?.data_as_of ?? "—"}</StatusFact>
         <StatusFact label="已建立">{built}／{total} 檔</StatusFact>
         <StatusFact label="符合條件">{selected} 檔</StatusFact>
         {data && <StatusFact label="今日更新">{progressText(data.progress)}</StatusFact>}
         {data && (
-          <StatusFact label="今日上游呼叫">
+          <StatusFact label="今日上游呼叫" help="dailyCap">
             {data.upstream_calls_today}／{data.daily_cap} 次
           </StatusFact>
         )}
@@ -222,6 +225,7 @@ export default function AnalystUpdatePanel({
       <p className="caption">
         今天已成功的股票不會重抓；失敗的會在冷卻後重試。全站共用，多人同時按也不會重複抓。
       </p>
+      <MetricHelpRow metrics={["rateLimitPause", "rotatingUpdate"]} />
       <RunLine run={run} />
       {failed.length > 0 && (
         <ul className="opp-list" aria-label="更新失敗的股票">
@@ -243,10 +247,19 @@ export default function AnalystUpdatePanel({
   );
 }
 
-function StatusFact({ label, children }: { label: string; children: ReactNode }) {
+function StatusFact({
+  label, help, children,
+}: {
+  label: string;
+  help?: MetricHelpKey;
+  children: ReactNode;
+}) {
   return (
     <li aria-label={label}>
-      <span className="opp-detail-label">{label}</span>
+      <span className="opp-detail-label-row">
+        <span className="opp-detail-label">{label}</span>
+        {help && <MetricInfo metric={help} />}
+      </span>
       <strong className="num">{children}</strong>
     </li>
   );

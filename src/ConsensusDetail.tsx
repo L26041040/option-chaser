@@ -21,6 +21,8 @@ import {
   type OpportunityConsensusDetail,
 } from "./api";
 import { PR_HISTORY_EXPLAINER, prLabel } from "./dispersionRank";
+import MetricInfo from "./MetricInfo";
+import type { MetricHelpKey } from "./metricHelp";
 import { gateFailureReasons, ratioPct, reasonText, STATUS_LABELS } from "./opportunity";
 import { money } from "./scenarios";
 
@@ -120,10 +122,13 @@ function DetailBody({ data }: { data: OpportunityConsensusDetail }) {
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ label, value, help }: { label: string; value: string; help?: MetricHelpKey }) {
   return (
     <li>
-      <span className="opp-detail-label">{label}</span>
+      <span className="opp-detail-label-row">
+        <span className="opp-detail-label">{label}</span>
+        {help && <MetricInfo metric={help} />}
+      </span>
       <strong className="num">{value}</strong>
     </li>
   );
@@ -135,16 +140,17 @@ function Facts({ item, data }: { item: ConsensusItem; data: OpportunityConsensus
   const months = data.detail_available ? data.series.length : null;
   return (
     <ul className="opp-detail-facts" aria-label="共識數值">
-      <Fact label="平均目標價" value={moneyOrDash(item.mean)} />
+      <Fact label="平均目標價" value={moneyOrDash(item.mean)} help="meanTarget" />
       <Fact label="標準差" value={moneyOrDash(item.stdev)} />
-      <Fact label="分析師分歧率（標準差 ÷ 平均）" value={ratioPct(item.dispersion)} />
-      <Fact label="分歧度歷史排序" value={prLabel(item.percentile)} />
+      <Fact label="分析師分歧率（標準差 ÷ 平均）" value={ratioPct(item.dispersion)}
+            help="dispersionRate" />
+      <Fact label="分歧度歷史排序" value={prLabel(item.percentile)} help="dispersionRank" />
       <Fact
         label="合格歷史點"
         value={months === null ? `${item.history_points}` : `${item.history_points} / ${months} 個月`}
       />
-      <Fact label="有效券商數" value={`${item.n_analysts}`} />
-      <Fact label="資料日期" value={item.as_of ?? "—"} />
+      <Fact label="有效券商數" value={`${item.n_analysts}`} help="validBrokerCount" />
+      <Fact label="資料日期" value={item.as_of ?? "—"} help="dataDate" />
     </ul>
   );
 }

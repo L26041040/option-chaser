@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import Heatmap from "./Heatmap";
@@ -15,6 +15,12 @@ const matrix = resolveMatrix(view, baselineTopCandidate(view)!.matrix);
 /** 報酬率格子＝日期欄那些 `<td>`，不含最右邊的 ±% annotation 欄
  *  （QA-FIX-1）。兩者都是 `<td>`，用 class 分開才不會把 annotation
  *  誤算成一格報酬率。 */
+/** 「分界怎麼算」ⓘ 的說明卡收起時不渲染（V2-04／#406），先用鍵盤式
+ *  click（Enter）打開再讀內容。 */
+function openCrossoverInfo() {
+  fireEvent.click(screen.getByRole("button", { name: "分界怎麼算" }), { detail: 0 });
+}
+
 function valueCells(container: HTMLElement): HTMLElement[] {
   return Array.from(
     container.querySelectorAll<HTMLElement>("td:not(.heatmap-move-pct)"));
@@ -268,6 +274,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     const marked = container.querySelectorAll(".heatmap-crossover-cell");
     expect(marked.length).toBeGreaterThan(0);
 
+    openCrossoverInfo();
     expect(screen.getByText(/格子是 Spread 報酬率/)).toBeInTheDocument();
     expect(screen.getByText(/報酬相等的分界/)).toBeInTheDocument();
     expect(screen.getByText(/08\/07 118 Long Call/)).toBeInTheDocument();
@@ -318,6 +325,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     // row0＝價格 90（低）Spread 較高、row1＝價格 110（高）comparator 較高
     const { unmount } = render(
       <Heatmap matrix={baseMatrix} comparator={callComparator(comparatorMatrix)} />);
+    openCrossoverInfo();
     expect(screen.getByText(
       "標的價較低的一側 Spread 較高，較高的一側 Long Call 較高。")).toBeInTheDocument();
     unmount();
@@ -325,6 +333,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     // 翻轉之後同一句話要跟著翻——不是寫死的固定文案。
     const flipped: Matrix = { ...baseMatrix, cells: [[-0.3, -0.4], [0.5, 0.6]] };
     render(<Heatmap matrix={flipped} comparator={callComparator(comparatorMatrix)} />);
+    openCrossoverInfo();
     expect(screen.getByText(
       "標的價較高的一側 Spread 較高，較低的一側 Long Call 較高。")).toBeInTheDocument();
   });
@@ -333,6 +342,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
      "option_type，不是從策略反推", () => {
     const comparatorMatrix: Matrix = { ...baseMatrix, cells: [[0.1, 0.1], [0.1, 0.1]] };
     render(<Heatmap matrix={baseMatrix} comparator={putComparator(comparatorMatrix)} />);
+    openCrossoverInfo();
     expect(screen.getByText(/08\/07 82 Long Put/)).toBeInTheDocument();
     expect(screen.queryByText(/Long Call/)).not.toBeInTheDocument();
   });
@@ -350,6 +360,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
                comparator={callComparator(comparatorMatrix)} />);
 
     expect(container.querySelectorAll(".heatmap-crossover-cell")).toHaveLength(0);
+    openCrossoverInfo();
     expect(screen.getByText(/此圖範圍內沒有分界/)).toBeInTheDocument();
     expect(screen.getByText(/整張都是 Spread 較高/)).toBeInTheDocument();
   });
@@ -361,6 +372,7 @@ describe("Crossover Boundary overlay（#116，spec #117 §4）", () => {
     };
     render(<Heatmap matrix={baseMatrix}
                     comparator={callComparator(comparatorAlwaysWins)} />);
+    openCrossoverInfo();
     expect(screen.getByText(/整張都是 Long Call 較高/)).toBeInTheDocument();
   });
 

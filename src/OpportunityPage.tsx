@@ -44,6 +44,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import AnalystUpdatePanel from "./AnalystUpdatePanel";
+import MetricInfo, { MetricHelpRow } from "./MetricInfo";
 
 import {
   formatLegs,
@@ -411,14 +412,17 @@ function ConfiguredBody({
         ) : selected.length === 0 ? (
           <p className="caption">目前沒有同時通過兩道門檻的股票。</p>
         ) : (
-          <ul className="opp-list">
-            {selected.map((item) => (
-              <li key={item.symbol} aria-label={item.symbol} className="opp-item">
-                <ItemSummary item={item} />
-                <ConsensusDetailToggle symbol={item.symbol} />
-              </li>
-            ))}
-          </ul>
+          <>
+            <MetricHelpRow metrics={CONSENSUS_HELP} />
+            <ul className="opp-list">
+              {selected.map((item) => (
+                <li key={item.symbol} aria-label={item.symbol} className="opp-item">
+                  <ItemSummary item={item} />
+                  <ConsensusDetailToggle symbol={item.symbol} />
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         <div className="opp-actions">
@@ -529,6 +533,7 @@ function ConfiguredBody({
             </label>
           </div>
           <p className="caption opp-disclaimer">{RETURN_DISCLAIMER}</p>
+          <MetricHelpRow metrics={RESULT_HELP} />
           <table className="tbl opp-table">
             <thead>
               <tr>
@@ -587,6 +592,12 @@ function ConfiguredBody({
 }
 
 const RESULT_COLUMNS = 10;
+
+/** V2-04（#406）：清單／結果表每列都重複的數字，說明只在區塊頂端放一次。 */
+const CONSENSUS_HELP = [
+  "meanTarget", "validBrokerCount", "dispersionRate", "dispersionRank", "dataDate",
+] as const;
+const RESULT_HELP = ["costAndMaxLoss", "scenarioReturn"] as const;
 
 /**
  * 結果表的一列＋（打開時）它下面的一列共識明細（LIVE-T5／#401）：每一列都能
@@ -673,6 +684,7 @@ function UniverseCard({ data }: { data: OpportunityConsensusResponse }) {
       <h2 className="section-title">
         {u.label}
         {u.provisional && <span className="tag warn">暫定</span>}
+        <MetricInfo metric="scanUniverse" />
       </h2>
       <p className="opp-facts">
         <span>共 {u.symbols} 檔</span>
